@@ -1,0 +1,1 @@
+"""Rescue robot dashboard backend."""

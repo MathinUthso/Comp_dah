@@ -1,0 +1,10 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic-settings>=2.5
+websockets>=13.0
+opencv-python-headless>=4.10
+numpy>=1.26
+psutil>=6.0
+pyudev>=0.24
+# ROS2 dependencies are expected from the robot runtime environment:
+# rclpy, rosbridge_suite, std_msgs, lifecycle_msgs, sensor_msgs, diagnostic_msgs

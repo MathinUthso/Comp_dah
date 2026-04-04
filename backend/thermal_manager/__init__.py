@@ -1,0 +1,1 @@
+"""Thermal camera processing utilities."""

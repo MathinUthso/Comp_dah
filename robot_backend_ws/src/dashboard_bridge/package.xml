@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>dashboard_bridge</name>
+  <version>0.1.0</version>
+  <description>ROS2 bridge layer for the rescue robot dashboard backend.</description>
+  <maintainer email="robotics@example.com">robotics</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>diagnostic_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>lifecycle_msgs</depend>
+
+  <exec_depend>rosbridge_server</exec_depend>
+  <exec_depend>flexbe_core</exec_depend>
+
+</package>

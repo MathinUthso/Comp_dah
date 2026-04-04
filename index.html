@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aegis Dashboard</title>
+    <link rel="stylesheet" href="frontend/style.css">
+    <script src="frontend/script.js" defer></script>
+</head>
+<body>
+
+    <nav>
+        <div class="nav-left">
+        <span> File</span>
+        <span>Edit</span>
+        <span id="labview-nav">Lab_View</span>
+        <span id="hardware-nav">Hardware</span>
+        </div>
+        <div class="nav-right">
+            <span id="log-timestamp">00:00:00</span>
+        </div>
+    </nav>
+
+    <div class="hero-container">
+        <div class="left-hero">
+            <div id="top-area" class="left-hero-top">
+                <div class="window cam-window"><div class="title-bar"></div><div class="content-area cam-content">CAM_01</div></div>
+                <div class="window cam-window"><div class="title-bar"></div><div class="content-area cam-content">CAM_02</div></div>
+                <div class="window cam-window"><div class="title-bar"></div><div class="content-area cam-content">CAM_03</div></div>
+                <div class="window cam-window"><div class="title-bar"></div><div class="content-area cam-content">CAM_04</div></div>
+            </div>
+            
+            <div class="left-hero-bottom">
+                <div class="window">
+                    <div class="title-bar"></div>
+                    <div class="control-panel-grid">
+                        <div class="cp-left">
+                            <button class="toggle-btn" onclick="toggleDashboard()">SWAP VIEW</button>
+                            <div class="dpad">
+                                <div class="dp-btn dp-u">↑</div>
+                                <div class="dp-btn dp-l">←</div>
+                                <div class="dp-btn dp-c"></div>
+                                <div class="dp-btn dp-r">→</div>
+                                <div class="dp-btn dp-d">↓</div>
+                            </div>
+                            
+                        </div>
+                        <div class="cp-status-column">
+                            <div class="status-pill status-ok">OK</div>
+                            <div class="status-pill status-autonomous">Autonomous</div>
+                            <div class="status-pill status-progress">0%</div>
+                            
+                        </div>
+                        <div class="mission-bar">
+                            <div class="mission-uptime">
+                                UPTIME: <span id="mission-timer">00:00</span>
+                            </div>
+                            <div class="mission-actions">
+                                <button id="start-btn" class="retro-btn mission-btn mission-start-btn" onclick="startMission()">START</button>
+                                <button class="retro-btn mission-btn mission-reset-btn" onclick="resetMission()">RESET</button>
+                            </div>
+                        </div>
+                        <div class="estop-large">
+                            <button id="estop-btn" class="estop-large">E-STOP</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="section-2" class="window span-2">
+                    <div class="title-bar"></div>
+                    <div id="main-display" class="content-area main-display-default">3D_VISUALIZATION (SPANNING)</div>
+                </div>
+
+                <div id="section-3" class="window hidden">
+                    <div class="title-bar"></div>
+                    <div id="log-dump-content"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="right-hero">
+            <div class="window full-height-window">
+                <div class="title-bar"></div>
+                
+                <div class="mission-meta-grid">
+                    <div>ID: <span class="mission-id">RC-2026-RESCUE</span></div>
+                    <div>PRIORITY: <span class="priority-high">HIGH</span></div>
+                    <div>AREA: ZONE-B CRATE SECTOR</div>
+                    <div>NOTES: OBSERVE THERMAL</div>
+                </div>
+
+                <div class="tab-strip">
+                    <div class="tab sys-tab active" onclick="switchSysTab(event, 'sys-home')">Home</div>
+                    <div class="tab sys-tab" onclick="switchSysTab(event, 'sys-inspect')">Inspect</div>
+                    <div class="tab sys-tab" onclick="switchSysTab(event, 'sys-insert')">Insert</div>
+                    <div class="tab sys-tab" onclick="switchSysTab(event, 'sys-crate')">Crate</div>
+                </div>
+
+                <div class="sys-content-scroll">
+                    
+                    <div id="sys-home" class="sys-pane active">
+                        <div class="section-title">VICTIM CRATE STATUS</div>
+                        <div class="binary-container">
+                            <div class="binary-light-col">
+                                <div id="crate-red" class="light red on"></div>
+                                <div class="binary-label">NOT FOUND</div>
+                            </div>
+                            <div class="binary-light-col">
+                                <div id="crate-green" class="light green"></div>
+                                <div class="binary-label">DETECTED</div>
+                            </div>
+                        </div>
+                    <div class="section-title">Linear Rail STATUS</div>
+                        <div class="binary-container">
+                            <div class="binary-light-col">
+                                <div id="linear-red" class="light red on"></div>
+                                <div class="binary-label">NOT FOUND</div>
+                            </div>
+                            <div class="binary-light-col">
+                                <div id="linear-green" class="light green"></div>
+                                <div class="binary-label">DETECTED</div>
+                            </div>
+                        </div>
+                    <div class="section-title">Omni STATUS</div>
+                        <div class="binary-container">
+                            <div class="binary-light-col">
+                                <div id="omni-red" class="light red on"></div>
+                                <div class="binary-label">NOT FOUND</div>
+                            </div>
+                            <div class="binary-light-col">
+                                <div id="omni-green" class="light green"></div>
+                                <div class="binary-label">DETECTED</div>
+                            </div>
+                        </div>    
+
+                    </div>
+
+                    <div id="sys-inspect" class="sys-pane">
+                        <div class="inspect-toggle-row">
+                            <button class="retro-btn sub-btn-active half-width-btn" id="btn-linear" onclick="toggleInspectMode('linear')">Linear Inspect</button>
+                            <button class="retro-btn half-width-btn" id="btn-omni" onclick="toggleInspectMode('omni')">Omni Inspect</button>
+                        </div>
+                        <div id="inspect-fields">
+                            <div class="data-row"><span>HAZMAT:</span> <span class="text-red">DETECTED (FLAM)</span></div>
+                            <div class="data-row"><span>PRESSURE:</span> <span>101.4 kPa</span></div>
+                            <div class="data-row"><span>ACUITY:</span> <span>VISUAL_OK</span></div>
+                            <div class="data-row"><span>QR_CODE:</span> <span>RC_4920_A</span></div>
+                        </div>
+                            <div class="arm-feed-tall">
+                                    ARM_FEED(Zoomed)
+                            </div>
+                    </div>
+
+                    <div id="sys-insert" class="sys-pane">
+                        <button class="retro-btn full-width-btn insert-btn">LINEAR INSERT</button>
+                        <button class="retro-btn full-width-btn drill-btn-default" id="drill-btn" onclick="simulateDrill()">ROLL THE ARM (DRILL)</button>
+                        <div id="drill-status" class="drill-status-text">READY</div>
+                        <div class="arm-feed-tall">
+                                    ARM_FEED(Zoomed)
+                        </div>
+                    </div>
+
+                <div id="sys-crate" class="sys-pane">
+
+                    <div class="crate-feed-grid">
+
+                        <div class="feed-square thermal-feed">
+
+                            THERMAL_FEED
+
+                        </div>
+
+                        <div class="feed-square arm-feed-square">
+                        ARM_FEED (Zoomed)</div>
+                    </div>
+
+                    <div class="data-row motion-row">MOTION: <span class="text-green">DETECTED</span></div>
+                    <div class="proximity-panel">
+                            <div class="proximity-title">PROXIMITY SAMPLING</div>
+                            <div class="proximity-bar">
+                                <div class="proximity-marker"></div>
+                            </div> 
+                        </div>
+                            <div class="data-row"><span>HAZMAT:</span> <span class="text-red">DETECTED (FLAM)</span></div>
+                            <div class="data-row"><span>ACUITY:</span> <span>VISUAL_OK</span></div>
+                            <div class="data-row"><span>QR_CODE:</span> <span>RC_4920_A</span></div>    
+                </div>
+
+                 </div>
+
+                <div class="sys-persistent-footer">
+                    <div class="sys-log-shell">
+                        <div class="sys-log-titlebar">
+                            <span>SYS_LOG_STREAM_01</span>
+                            <span id="log-timestamp">00:00:00</span>
+                        </div>
+                        <div id="persistent-logs">
+                            <div>[SYSTEM] INITIALIZING LOG_STREAM...</div>
+                            <div>[HARDWARE] ARM_CONTROLLER: READY</div>
+                            <div>[SENSOR] LIDAR_SCAN: ACTIVE</div>
+                            <div>[NETWORK] LINK_ESTABLISHED: 42ms</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="window">
+                <div class="behavior-panel">
+                    <div class="tab-strip">
+                        <div class="tab" onclick="switchTab(0)">Mission</div>
+                        <div class="tab active" onclick="switchTab(1)">Behaviors</div>
+                        <div class="tab" onclick="switchTab(2)">Settings</div>
+                    </div>
+                    <div class="tab-body" id="t0"><div class="retro-btn">SLAM</div></div>
+                    <div class="tab-body active" id="t1">
+                        <div class="retro-btn">Move to waypoint</div>
+                        <div class="retro-btn">Explore</div>
+                        <div class="retro-btn">Arm</div>
+                    </div>
+                    <div class="tab-body" id="t2">
+                        <div class="retro-btn">Recalibrate</div>
+                        <div class="retro-btn">Admin System</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>

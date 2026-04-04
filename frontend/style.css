@@ -1,0 +1,269 @@
+        :root {
+            --platinum: #e0e0e0;
+            --bezel-dark: #808080;
+            --bezel-light: #ffffff;
+            --apple-orange: #f39200;
+            --apple-green: #4caf50;
+            --apple-blue: #1e88e5;
+            --apple-light-green: #c8e6c9;
+            --apple-red: #cc0000;
+            --active-bg: #fdfdfd;
+            --font-main: "Geneva", "Chicago", "Segoe UI", sans-serif;
+            --apple-gray: #433e3e;
+        }
+        @keyframes sweep { from { transform: translateY(-100%); } to { transform: translateY(100%); } }
+
+        * { box-sizing: border-box; cursor: default; }
+        body { margin: 0; height: 100vh; display: flex; flex-direction: column; background-color: #556677; background-image: radial-gradient(#445566 1px, transparent 1px); background-size: 3px 3px; font-family: var(--font-main); overflow: hidden; }
+
+        nav{ height: 28px;
+             background: var(--platinum);
+              border-bottom: 1px solid #000;
+               display: flex;
+               justify-content:space-between;
+                align-items: center; 
+                padding: 0 15px; font-size: 13px; font-weight: bold; gap: 20px; }
+        .nav-left{
+            display: flex;
+            gap:20px;
+        }
+    
+
+
+        .nav-left span {
+            cursor: pointer;
+        }
+
+        .nav-left span:hover {
+            background: var(--apple-blue); /* Retro highlight effect */
+            color: white;
+        }
+
+        .nav-right {
+            font-family: "Courier New", monospace; /* Digital clock look */
+            color: #333;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .ros-status {
+            border: 1px solid #000;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: bold;
+            color: #fff;
+        }
+        .cam-status {
+            border: 1px solid #000;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: bold;
+            color: #fff;
+        }
+        .cam-online { background: var(--apple-green); }
+        .cam-offline { background: var(--apple-red); }
+        .cam-degraded { background: var(--apple-orange); }
+        .ros-online { background: var(--apple-green); }
+        .ros-offline { background: var(--apple-red); }
+        .ros-degraded { background: var(--apple-orange); }
+        .hero-container { display: grid; grid-template-columns: 3fr 1fr; gap: 12px; padding: 12px; flex-grow: 1; height: calc(100vh - 28px); }
+        .left-hero { display: grid; grid-template-rows: 3fr 1fr; gap: 12px; }
+        .left-hero-top { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 8px; height: 100%; }
+        .left-hero-bottom { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; height: 100%; }
+        .right-hero { display: grid; grid-template-rows: 2.2fr 1fr; gap: 12px; }
+        
+        .window { background: var(--platinum); border: 1px solid #000; box-shadow: inset 1px 1px var(--bezel-light), 1px 1px #000; display: flex; flex-direction: column; overflow: hidden; }
+        .title-bar { height: 20px; background: repeating-linear-gradient(0deg, #000, #000 1px, transparent 1px, transparent 2px); background-size: 100% 2px; margin: 2px 4px; border: 1px solid #000; background-clip: content-box; padding: 0 30px; }
+        .content-area { flex-grow: 1; display: flex; justify-content: center; align-items: center; font-size: 11px; color: #333; font-weight: bold; text-align: center; }
+
+        /* --- CONTROL PANEL --- */
+        .control-panel-grid { display: grid; grid-template-columns: 1fr 1.2fr; height: 100%; padding: 6px; background: #dcdcdc; gap: 5px; }
+        .cp-left { display: flex; flex-direction: column; align-items: center; justify-content: space-around; }
+        .dpad { display: grid; grid-template-areas: ". u ." "l c r" ". d ."; gap: 2px; }
+        .dp-btn { width: 16px; height: 16px; border-radius: 50%; border: 1px solid #000; background: var(--apple-orange); color: white; display: flex; align-items: center; justify-content: center; font-size: 9px; }
+        .toggle-btn { background: #444; color: white; border: 1px solid #000; font-size: 8px; padding: 4px; cursor: pointer; width: 100%; height: 40%; margin-bottom: 2px; font-weight: bold; }
+        .estop-large {  width: 100%; height: 100%; background: var(--apple-red);  border: 2px solid #000; color: white; font-size: 40px; display: flex; align-items: center; justify-content: center; box-shadow: 2px 2px 0 #000; }
+        .status-pill { text-align: center; color: white; font-size: 9px; font-weight: bold; padding: 2px; border: 1px solid #000; width: 100%; height: 25%; }
+
+        /* --- CAMERA GRID --- */
+        .cam-grid { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; width: 100%; height: 100%; background: #000; }
+        .cam-item { background: #1a1a1a; border: 0.5px solid #444; color: #0f0; font-size: 9px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background 0.2s; }
+        .cam-item:hover { background: #333; border-color: var(--apple-orange); z-index: 10; }
+
+        .span-2 { grid-column: span 2; }
+        .hidden { display: none !important; }
+        
+        /* --- SYS MONITOR PANELS --- */
+        .sys-pane { padding: 8px; font-size: 14px; flex-grow: 1; display: none; }
+        .sys-pane.active { display: block; }
+        .data-row { background: #fff; border: 1px solid #999; height: 30px; padding: 4px; margin-bottom: 3px; font-family: monospace; display: flex; justify-content: space-between; }
+        .sys-persistent-footer { height: 100px; background: #000; border-top: 2px solid var(--bezel-dark); position: relative; flex-shrink: 0; }
+        
+        /* --- BEHAVIOR TREE --- */
+        .tab-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(10px, 1fr)); background: var(--apple-gray); border-bottom: 1px solid #000; }
+        .tab { padding: 6px; text-align: center; font-size: 10px; font-weight: bold; color: #ccc; cursor: pointer; border-right: 1px solid #333; }
+        .tab.active { background: var(--active-bg); color: #000; }
+        .tab-body { flex-grow: 1; background: var(--active-bg); padding: 10px; display: none; }
+        .tab-body.active { display: flex; flex-wrap: wrap; gap: 8px; align-items: start; }
+        
+        .retro-btn { 
+            background: #eee; border: 1px solid #000; padding: 5px; font-size: 9px; font-weight: bold; 
+            text-align: center; width: 120px; box-shadow: 1px 1px 0 #000; cursor: pointer;
+        }
+        .retro-btn:active { transform: translate(1px, 1px); box-shadow: 0 0 0; }
+        .sub-btn-active { background: var(--apple-blue); color: white; }
+        #persistent-logs::-webkit-scrollbar {
+            width: 6px;
+        }
+        #persistent-logs::-webkit-scrollbar-track {
+            background: #000;
+        }
+        #persistent-logs::-webkit-scrollbar-thumb {
+            background: #444;
+            border: 1px solid #666;
+        }
+        .log-entry {
+            border-bottom: 1px solid #111;
+            padding: 2px 0;
+        }
+        .log-warn { color: var(--apple-orange); }
+        .log-err { color: var(--apple-red); }
+
+        .cam-window { background: #000; }
+        .cam-content { color: #0f0; }
+
+        .dp-u { grid-area: u; }
+        .dp-l { grid-area: l; }
+        .dp-c { grid-area: c; background: #333; }
+        .dp-r { grid-area: r; }
+        .dp-d { grid-area: d; }
+
+        .cp-status-column { display: flex; flex-direction: column; gap: 4px; justify-content: center; }
+        .status-ok { background: var(--apple-green); }
+        .status-autonomous { background: var(--apple-blue); }
+        .status-progress { background: var(--apple-light-green); color: #333; }
+        .status-fault { background: var(--apple-red); }
+        .status-manual { background: var(--apple-orange); }
+
+        .mission-bar {
+            background: #444;
+            color: #fff;
+            padding: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid #000;
+        }
+        .mission-uptime { font-family: "Courier New", monospace; font-size: 18px; font-weight: bold; }
+        #mission-timer { color: var(--apple-green); }
+        .mission-actions { display: flex; gap: 8px; }
+        .mission-btn { width: 70px; padding: 5px; }
+        .mission-start-btn { background: var(--apple-green); color: #000; }
+        .mission-reset-btn { background: var(--apple-red); color: #fff; }
+
+        .main-display-default { background: #333; color: #aaa; }
+        #log-dump-content { flex-grow: 1; display: flex; }
+
+        .full-height-window { height: 100%; }
+        .mission-meta-grid {
+            background: #eee;
+            padding: 4px;
+            border-bottom: 1px solid #000;
+            font-size: 8.5px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2px;
+        }
+        .mission-id { color: var(--apple-orange); }
+        .priority-high { color: red; }
+
+        .sys-content-scroll { flex-grow: 1; overflow-y: auto; background: #f0f0f0; }
+        .section-title { text-align: center; font-weight: bold; font-size: 13px; margin-bottom: 8px; }
+        .binary-container {
+            display: flex;
+            justify-content: space-around;
+            padding: 15px;
+            background: #333;
+            border: 3px solid #000;
+            margin-bottom: 15px;
+        }
+        .binary-light-col { text-align: center; }
+        .light { width: 50px; height: 50px; border-radius: 50%; border: 3px solid #000; background: #111; }
+        .light.red.on { background: #f00; box-shadow: 0 0 15px #f00; }
+        .light.green.on { background: #0f0; box-shadow: 0 0 15px #0f0; }
+        .binary-label { font-size: 10px; color: #fff; margin-top: 5px; }
+
+        .inspect-toggle-row { display: flex; gap: 4px; margin-bottom: 8px; }
+        .half-width-btn { width: 50%; }
+        .text-red { color: red; }
+        .text-green { color: green; }
+        .arm-feed-tall {
+            height: 250px;
+            width: 100%;
+            background: #000;
+            border: 2px solid #0f0;
+            color: #0f0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            position: relative;
+        }
+
+        .full-width-btn { width: 100%; }
+        .insert-btn { margin-bottom: 5px; height: 30px; }
+        .drill-btn-default { height: 40px; background: #ddd; }
+        .drill-status-text { text-align: center; font-size: 8px; margin-top: 5px; color: var(--apple-orange); }
+
+        .crate-feed-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+        .feed-square {
+            aspect-ratio: 1 / 1;
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+        }
+        .thermal-feed { border: 2px solid orange; color: orange; }
+        .arm-feed-square { border: 2px solid #0f0; color: #0f0; position: relative; }
+        .motion-row { font-size: 14px; padding: 10px; }
+        .proximity-panel { margin-top: 10px; padding: 5px; background: #fff; border: 1px solid #999; }
+        .proximity-title { font-size: 8px; margin-bottom: 2px; }
+        .proximity-bar {
+            height: 12px;
+            background: linear-gradient(90deg, #4caf50 0%, #ffeb3b 50%, #f44336 100%);
+            position: relative;
+            border: 1px solid #000;
+        }
+        .proximity-marker { position: absolute; left: 60%; top: 0; width: 2px; height: 100%; background: #000; }
+
+        .sys-log-shell {
+            background: #000;
+            border-top: 2px solid var(--bezel-dark);
+            height: 160px;
+            display: flex;
+            flex-direction: column;
+        }
+        .sys-log-titlebar {
+            background: #333;
+            padding: 2px 6px;
+            color: #0f0;
+            font-size: 9px;
+            border-bottom: 1px solid #444;
+            display: flex;
+            justify-content: space-between;
+        }
+        #persistent-logs {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 5px;
+            font-family: "Courier New", monospace;
+            font-size: 10px;
+            color: #0f0;
+            line-height: 1.2;
+        }
+
+        .swap-primary-window { background: #333; height: 100%; width: 100%; }
+        .swap-primary-content { color: #aaa; }
