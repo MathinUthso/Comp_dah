@@ -1,0 +1,15 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.env
+
+# Runtime state written by the backend (backend/config/service.py)
+backend/config/runtime.json
+
+# ROS 2 / colcon build artifacts
+build/
+install/
+log/
