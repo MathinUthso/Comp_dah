@@ -69,6 +69,31 @@ Expected:
 
 If names are unstable, add udev rules (recommended for production).
 
+### Identify exactly which `/dev/video*` is your USB camera
+
+Use this sequence:
+
+```bash
+v4l2-ctl --list-devices
+```
+
+Then map each listed camera node to USB bus path/vendor info:
+
+```bash
+for d in /dev/video*; do
+   echo "===== $d ====="
+   udevadm info -q property -n "$d" | grep -E 'ID_MODEL=|ID_VENDOR_ID=|ID_MODEL_ID=|ID_PATH='
+done
+```
+
+Quick visual check of the chosen node:
+
+```bash
+ffplay -f v4l2 -i /dev/video0
+```
+
+Replace `/dev/video0` with the node you want.
+
 ---
 
 ## 4) ROS2 workspace hookup (local or external)
@@ -78,15 +103,18 @@ You can use any built ROS2 workspace location.
 ### Option A: one-off shell startup
 
 ```bash
-source /opt/ros/humble/setup.bash
+source /opt/ros/jazzy/setup.bash
 source /absolute/path/to/your/ws/install/setup.bash
 python3 start_backend.py
 ```
 
+(On Ubuntu 22.04 use `/opt/ros/humble/setup.bash`; `start_backend.py` picks Jazzy first and falls
+back to Humble automatically.)
+
 ### Option B: persistent launcher env vars
 
 ```bash
-export ROS_DISTRO_SETUP=/opt/ros/humble/setup.bash
+export ROS_DISTRO_SETUP=/opt/ros/jazzy/setup.bash
 export WS_SETUP=/absolute/path/to/your/ws/install/setup.bash
 python3 start_backend.py
 ```
@@ -97,6 +125,73 @@ python3 start_backend.py
 2. backend API (`uvicorn backend.app:app`)
 
 and shuts both down on Ctrl+C.
+
+### Camera bridge workflow (hardware)
+
+Build and launch the ROS packages from the `robot_backend_ws` workspace, then let the dashboard consume ROS topics:
+
+```bash
+cd /home/mathinonthemoon/Documents/Comp_dah/robot_backend_ws
+colcon build --packages-select dashboard_bridge camera_bridge aegis_description aegis_robot_bridge
+source install/setup.bash
+ros2 launch dashboard_bridge dashboard_bridge.launch.py
+```
+
+### Gazebo Classic simulation workflow
+
+> Gazebo Classic 11 is Ubuntu 22.04/Humble only. On the `ubuntu-24-jazzy` branch the simulator
+> packages are `COLCON_IGNORE`d; run this section from `main` on a 22.04 machine.
+
+Use the simulator when no physical camera or lidar is connected. The simulation and hardware paths
+can coexist, but do not run both camera publishers on the same topics at the same time.
+
+```bash
+# Terminal 1
+python3 start_backend.py
+
+# Terminal 2
+source /opt/ros/jazzy/setup.bash
+source robot_backend_ws/install/setup.bash
+ros2 launch aegis_sim sim.launch.py gui:=true rviz:=false
+```
+
+What the simulation publishes:
+
+| Dashboard use | Simulated source | Adapter output |
+|---|---|---|
+| Drive | `/cmd_vel` | `/cmd_vel_sim` to Gazebo diff drive |
+| Odometry | Gazebo diff drive | `/hardware/odometry` |
+| IMU | Gazebo IMU sensor | `/hardware/imu` |
+| Lidar | Gazebo ray sensor | `/scan` (frontend subscribes directly) |
+| Front camera | Gazebo camera | `/camera/image_compressed`, `/camera/video2/image_compressed` |
+| Rear camera | Gazebo camera | `/camera/webcam/image_compressed` |
+| Camera health | adapter | `/camera/video2/healthy`, `/camera/webcam/healthy`, `/camera/primary_source` |
+| Proximity | adapter from `/scan` | `/proximity/range` |
+| Thermal | synthetic adapter value | `/thermal/temperature` |
+| Diagnostics | adapter | `/diagnostics` |
+| E-stop/reset | adapter services | `/emergency/estop`, `/emergency/reset` |
+
+The launch file does not start rosbridge; `start_backend.py` owns that process. If the dashboard is
+connected but the sim is not, the existing MJPEG hardware camera path remains active. CAM_03 and
+CAM_04 intentionally show `NO SIGNAL` in simulation because the Aegis model has only front/rear
+cameras. See the dashboard **Lidar** tab for the live `/scan` polar plot.
+
+Published topics used by dashboard integration:
+
+The camera image topics are now published by `camera_bridge`. The `dashboard_bridge` package keeps the status and control nodes.
+
+- `/camera/image_compressed`
+- `/camera/video2/image_compressed`
+- `/camera/webcam/image_compressed`
+- `/camera/thermal/image_compressed`
+- `/camera/video2/healthy`
+- `/camera/webcam/healthy`
+- `/camera/thermal/healthy`
+- `/camera/primary_source`
+
+The FastAPI backend also exposes current camera bridge status:
+
+- `GET /api/v1/cameras/status`
 
 ---
 
@@ -154,6 +249,23 @@ Streams:
 - `/api/v1/cameras/CAM_03/stream.mjpeg`
 - `/api/v1/cameras/CAM_04/stream.mjpeg`
 - `/api/v1/cameras/THERMAL/stream.mjpeg`
+- `/api/v1/cameras/usb/stream.mjpeg?device=/dev/video0`
+
+### Show one USB camera directly in dashboard
+
+If you only connected one USB camera and want to show it immediately, set image source to:
+
+```text
+/api/v1/cameras/usb/stream.mjpeg?device=/dev/video0
+```
+
+For the current frontend codebase, you can also test quickly from browser:
+
+```text
+http://127.0.0.1:8000/api/v1/cameras/usb/stream.mjpeg?device=/dev/video0
+```
+
+If video appears there, use the same URL as the dashboard `<img src="...">` value.
 
 ---
 
@@ -190,7 +302,7 @@ Mission buttons map to:
 
 E-STOP behavior:
 
-- Calls direct `rclpy` critical publishers (estop + motor halt).
+- Calls direct `rclpy` critical clients (`std_srvs/Trigger` services) plus a zero `Twist` motor halt on `/cmd_vel`.
 - Does not rely solely on rosbridge availability.
 
 ---
@@ -247,7 +359,7 @@ No polling required for logs/state updates.
 
 ### E-STOP endpoint returns error
 
-- Verify `rclpy` and `std_msgs` installed in active environment.
+- Verify `rclpy`, `std_srvs`, and `geometry_msgs` are installed in the active environment.
 - Verify ROS domain and namespace are correct for robot runtime.
 
 ---
@@ -256,9 +368,10 @@ No polling required for logs/state updates.
 
 ```bash
 cd /home/mathinonthemoon/Documents/Comp_dah
-export WS_SETUP=/absolute/path/to/your/ws/install/setup.bash
 python3 start_backend.py
 ```
+
+`start_backend.py` sources `robot_backend_ws/install/setup.bash` by default (override with `WS_SETUP`). In a second terminal, source the workspace and start the bridge nodes (section 4, Camera bridge workflow).
 
 Then open `http://127.0.0.1:8000/` and validate:
 
