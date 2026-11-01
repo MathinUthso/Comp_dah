@@ -1,0 +1,1 @@
+"""ROS2 camera bridge package for the dashboard."""

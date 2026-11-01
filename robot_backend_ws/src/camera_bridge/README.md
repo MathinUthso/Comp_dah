@@ -1,1 +1,3 @@
-Camera bridge package placeholder. Runtime is implemented in the dashboard_bridge ROS2 package.
+Camera bridge ROS2 package.
+
+Publishes the dashboard camera image and health topics from local video devices.
