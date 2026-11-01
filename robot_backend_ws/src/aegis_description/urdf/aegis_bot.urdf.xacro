@@ -1,0 +1,651 @@
+<?xml version="1.0"?>
+<!--
+  robot: aegis_bot | consumers: RViz, robot_state_publisher, Gazebo Classic 11, dashboard
+  units: meters, kilograms, radians | frames: +X forward, +Y left, +Z up (REP-103)
+  root: base_footprint (ground contact plane) | source of dimensions: original aegis_bot.urdf.xacro
+  meshes: none; all geometry is primitive
+  inertials: primitive solid formulas in the link frame, COM at the primitive centre
+  assumptions:
+    - base_link is 0.125 m above base_footprint so the 0.075 m wheel radius touches z=0.
+    - Wheel joint axes are flipped to +Y in the base frame so positive joint velocity drives forward.
+    - Front wheels are driven as a differential pair; rear wheels are passive skid wheels.
+    - Lidar, front camera, rear camera, and IMU are fixed sensors with the poses recorded below.
+    - Flipper links pivot at their base_link attachment; in simulation the flipper_controller
+      Gazebo plugin holds their angle from /flipper_cmd and spins the tip rollers with /cmd_vel_sim.
+-->
+<robot name="aegis_bot" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+	<!-- =======================================
+	______________	PROPERTIES_________________
+	===========================================
+	-->
+
+	<xacro:property name="chassis_length" value="0.6"/>
+	<xacro:property name="chassis_width" value="0.4"/>
+	<xacro:property name="chassis_height" value="0.15"/>
+
+	<xacro:property name="wheel_radius" value="0.075"/>
+	<xacro:property name="wheel_width" value="0.15"/>
+
+	<xacro:property name="flipper_length" value="0.45"/>
+	<xacro:property name="flipper_width" value="0.04" />
+	<xacro:property name="flipper_height" value="0.19" />
+
+	<xacro:property name="idler_radius" value="0.04"/>
+
+	<!-- ===========================================
+	_______________MATERIALS_________________________
+	=================================================
+	 -->
+	<material name="white">
+		<color rgba="0.9 0.9 0.9 1"/>
+	</material>
+	<material name="dark_gray">
+		<color rgba="0.2 0.2 0.2 1"/>
+	</material>
+	<material name="orange">
+		<color rgba="0.95 0.57 0.0 1"/>
+	</material>
+	<material name="blue">
+		<color rgba="0.12 0.53 0.9 1"/>
+	</material>
+	<material name="green">
+		<color rgba="0.11 0.43 0.33 1"/>
+	</material>
+	<material name="red">
+		<color rgba="0.9 0.1 0.1 1"/>
+	</material>
+
+	<!-- ===============================================
+ 	______________________MACROS________________________
+	==================================================== -->
+
+	<!--
+	  Drive wheel: joint origin is the wheel centre. The cylinder axis is the link +Z axis;
+	  after the joint rpy the cylinder axis is along base -Y, so the joint axis is -Z in the
+	  joint frame to produce +Y rotation in base and forward motion for positive velocity.
+	-->
+	<xacro:macro name="drive_wheel" params="name x y z">
+		<link name="${name}">
+			<visual>
+				<geometry>
+					<cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+				</geometry>
+				<material name="dark_gray"/>
+			</visual>
+			<collision>
+				<geometry>
+					<cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+				</geometry>
+			</collision>
+			<inertial>
+				<mass value="0.5"/>
+				<inertia ixx="0.001640625" ixy="0" ixz="0"
+					 iyy="0.001640625" iyz="0" izz="0.00140625"/>
+			</inertial>
+		</link>
+
+		<joint name="${name}_joint" type="continuous">
+			<parent link="base_link"/>
+			<child link="${name}"/>
+			<origin xyz="${x} ${y} ${z}" rpy="1.5708 0 0"/>
+			<axis xyz="0 0 -1"/>
+			<dynamics damping="0.05" friction="0.0"/>
+		</joint>
+	</xacro:macro>
+
+
+	<!-- FLIPPER MACRO -->
+	<xacro:macro name="flipper" params="name x y z rpy color">
+		<link name="${name}">
+			<visual>
+				<origin xyz="${flipper_length/2} 0 0" rpy="0 0 0"/>
+				<geometry>
+					<box size="${flipper_length} ${flipper_width} ${flipper_height}"/>
+				</geometry>
+				<material name="${color}"/>
+			</visual>
+			<!--
+			  Track housing, not the track itself. Its bottom is 3 cm above the nose
+			  roller's lowest point, so the driven roller is the only thing that touches
+			  the ground: a full-height box let the front bottom edge dig in and anchor
+			  the robot while the roller spun.
+			-->
+			<collision>
+				<origin xyz="${flipper_length/2} 0 0.015" rpy="0 0 0"/>
+				<geometry>
+					<box size="${flipper_length} ${flipper_width} ${flipper_height - 0.03}"/>
+				</geometry>
+			</collision>
+			<inertial>
+				<origin xyz="${flipper_length/2} 0 0" rpy="0 0 0"/>
+				<mass value="0.1"/>
+				<inertia ixx="0.0003141667" ixy="0" ixz="0"
+					  iyy="0.001988333" iyz="0" izz="0.001700833"/>
+			</inertial>
+		</link>
+
+		<!--
+		  Axis is -Y so a positive angle raises the flipper tip. With +Y the tip
+		  (and its idler wheel) rotates down into the ground, which flips the robot.
+		-->
+		<joint name="${name}_joint" type="revolute">
+			<parent link="base_link"/>
+			<child link="${name}"/>
+			<origin xyz="${x} ${y} ${z}" rpy="${rpy}"/>
+			<axis xyz="0 -1 0"/>
+			<!--
+			  +/-90 deg from neutral: up to a vertical tip, down to a dog stance.
+			  60 Nm so a flipper loaded at its 0.45 m tip can still lift/hold the robot
+			  instead of being back-driven down while climbing.
+			-->
+			<limit lower="-1.5708" upper="1.5708" effort="60" velocity="1.0"/>
+			<dynamics damping="0.2" friction="0.0"/>
+		</joint>
+
+		<!-- IDLER WHEEL at flipper tip -->
+
+		<link name="${name}_idler">
+			<visual>
+				<geometry>
+					<cylinder radius="${idler_radius}" length="${wheel_width}"/>
+				</geometry>
+				<material name="dark_gray"/>
+			</visual>
+			<collision>
+				<geometry>
+					<cylinder radius="${idler_radius}" length="${wheel_width}"/>
+				</geometry>
+			</collision>
+			<inertial>
+				<mass value="0.1"/>
+				<inertia ixx="0.0002275" ixy="0" ixz="0"
+					 iyy="0.0002275" iyz="0" izz="0.00008"/>
+			</inertial>
+		</link>
+
+		<!--
+		  Tip idler = the track's nose sprocket. It sits at the very tip of the
+		  flipper with its lowest point on the track's bottom plane, so it is the
+		  leading and lowest contact: lowering the flipper plants this roller on the
+		  step and the driven roller climbs the edge. Tucked inboard (as before) the
+		  roller never touched anything and the flipper only skidded / levered the
+		  robot up.
+		-->
+		<joint name="${name}_idler_joint" type="continuous">
+			<parent link="${name}"/>
+			<child link="${name}_idler"/>
+			<origin xyz="${flipper_length} 0 ${-(flipper_height/2 - idler_radius)}" rpy="1.5708 0 0"/>
+			<axis xyz="0 0 1"/>
+			<dynamics damping="0.01" friction="0.0"/>
+		</joint>
+
+		<!--
+		  Track/tip contact: rubber-like friction on both the flipper body and its
+		  tip roller, otherwise they skid off the step (and drift sideways) as soon
+		  as the climb starts.
+		-->
+		<gazebo reference="${name}">
+			<mu1>1.5</mu1>
+			<mu2>1.5</mu2>
+			<kp>1000000</kp>
+			<kd>1</kd>
+		</gazebo>
+		<gazebo reference="${name}_idler">
+			<mu1>1.5</mu1>
+			<mu2>1.5</mu2>
+			<kp>1000000</kp>
+			<kd>1</kd>
+		</gazebo>
+	</xacro:macro>
+
+
+	<!-- ============================================
+	 ================Base-footlink===================
+	 ================================================ -->
+
+	<link name="base_footprint"/>
+
+
+	<joint name="base_footprint_joint" type="fixed">
+		<parent link="base_footprint"/>
+		<child link="base_link"/>
+		<origin xyz="0 0 0.125" rpy="0 0 0"/>
+	</joint>
+
+	<!-- ========================================
+	 _________________ BASE LINK _______________
+	 ============================================ -->
+	<link name="base_link">
+		<visual>
+			<geometry>
+				<box size="${chassis_length} ${chassis_width} ${chassis_height}"/>
+			</geometry>
+			<material name="orange"/>
+		</visual>
+		<collision>
+			<geometry>
+				<box size="${chassis_length} ${chassis_width} ${chassis_height}"/>
+			</geometry>
+		</collision>
+		<inertial>
+			<mass value="8.0"/>
+			<inertia ixx="0.1216667" ixy="0" ixz="0"
+				 iyy="0.255" iyz="0" izz="0.3466667"/>
+		</inertial>
+	</link>
+
+
+	<!-- ========================================
+		DRIVE WHEELS
+		x: front(+) / rear(-)
+		y: left(+) / right(-)
+		z: wheel sits at chassis bottom
+	============================================= -->
+
+
+	<xacro:drive_wheel name="front_left_wheel"
+	 x="0.25" y="0.22" z="-0.05"/>
+	<xacro:drive_wheel name="rear_left_wheel"
+	 x="-0.25" y="0.22" z="-0.05"/>
+	<xacro:drive_wheel name="front_right_wheel"
+	 x="0.25" y="-0.22" z="-0.05"/>
+	<xacro:drive_wheel name="rear_right_wheel"
+	 x="-0.25" y="-0.22" z="-0.05"/>
+
+
+	<!--==========================================
+ 	_____________FLIPPERS_________________________
+	===Pivots at same axis as nearest drv whl====
+	=============================================== -->
+
+	<xacro:flipper name="front_left_flipper"
+	x="0.25" y="0.22" z="0.0" rpy="0 0 0" color="blue"/>
+	<xacro:flipper name="rear_left_flipper"
+	x="-0.25" y="0.22" z="0.0" rpy="0 0 3.1416" color="blue"/>
+	<xacro:flipper name="front_right_flipper"
+	x="0.25" y="-0.22" z="0.0" rpy="0 0 0" color="green"/>
+	<xacro:flipper name="rear_right_flipper"
+	x="-0.25" y="-0.22" z="0.0" rpy="0 0 3.1416" color="green"/>
+
+
+	<!-- ==============================================
+	 _________________IMU______________________________
+	================================================ -->
+
+	<link name="imu-link">
+		<visual>
+			<geometry>
+				<box size="0.03 0.03 0.01"/>
+			</geometry>
+			<material name="white"/>
+		</visual>
+		<collision>
+			<geometry>
+				<box size="0.03 0.03 0.01"/>
+			</geometry>
+		</collision>
+		<inertial>
+			<mass value="0.05"/>
+			<inertia ixx="0.0000041667" ixy="0" ixz="0"
+				 iyy="0.0000041667" iyz="0" izz="0.0000075"/>
+		</inertial>
+	</link>
+	<joint name="imu_joint" type="fixed">
+		<parent link="base_link"/>
+		<child link="imu-link"/>
+		<origin xyz="0 0 0.02" rpy="0 0 0"/>
+	</joint>
+
+
+	<!-- ==========================================
+	_________________CAMERA________________________
+	=========================================== -->
+	<link name="camera_link">
+		<visual>
+			<geometry>
+				<box size="0.04 0.08 0.04"/>
+			</geometry>
+			<material name="dark_gray"/>
+		</visual>
+		<collision>
+			<geometry>
+				<box size="0.04 0.08 0.04"/>
+			</geometry>
+		</collision>
+		<inertial>
+			<mass value="0.05"/>
+			<inertia ixx="0.000033333" ixy="0" ixz="0"
+				 iyy="0.000013333" iyz="0" izz="0.000033333"/>
+		</inertial>
+	</link>
+
+	<joint name="camera_joint" type="fixed">
+		<parent link="base_link" />
+		<child link="camera_link"/>
+		<origin xyz="0.3 0 0.05" rpy="0 0 0"/>
+	</joint>
+
+	<link name="rear_camera_link">
+		<visual>
+			<geometry>
+				<box size="0.04 0.08 0.04"/>
+			</geometry>
+			<material name="dark_gray"/>
+		</visual>
+		<collision>
+			<geometry>
+				<box size="0.04 0.08 0.04"/>
+			</geometry>
+		</collision>
+		<inertial>
+			<mass value="0.05"/>
+			<inertia ixx="0.000033333" ixy="0" ixz="0"
+				 iyy="0.000013333" iyz="0" izz="0.000033333"/>
+		</inertial>
+	</link>
+
+	<joint name="rear_camera_joint" type="fixed">
+		<parent link="base_link"/>
+		<child link="rear_camera_link"/>
+		<origin xyz="-0.3 0 0.05" rpy="0 0 3.1416"/>
+	</joint>
+
+	<link name="third_person_camera_link">
+		<visual>
+			<geometry>
+				<box size="0.04 0.08 0.04"/>
+			</geometry>
+			<material name="dark_gray"/>
+		</visual>
+		<collision>
+			<geometry>
+				<box size="0.04 0.08 0.04"/>
+			</geometry>
+		</collision>
+		<inertial>
+			<mass value="0.05"/>
+			<inertia ixx="0.000033333" ixy="0" ixz="0"
+				 iyy="0.000013333" iyz="0" izz="0.000033333"/>
+		</inertial>
+	</link>
+
+	<joint name="third_person_camera_joint" type="fixed">
+		<parent link="base_link"/>
+		<child link="third_person_camera_link"/>
+		<origin xyz="-1.2 0 0.9" rpy="0 0.5 0"/>
+	</joint>
+
+	<!-- ==========================================
+	_________________ LIDAR _______________________
+	=========================================== -->
+	<link name="lidar_link">
+		<visual>
+			<geometry>
+				<cylinder radius="0.05" length="0.06"/>
+			</geometry>
+			<material name="dark_gray"/>
+		</visual>
+		<collision>
+			<geometry>
+				<cylinder radius="0.05" length="0.06"/>
+			</geometry>
+		</collision>
+		<inertial>
+			<mass value="0.12"/>
+			<inertia ixx="0.000111" ixy="0" ixz="0"
+				 iyy="0.000111" iyz="0" izz="0.00015"/>
+		</inertial>
+	</link>
+
+	<joint name="lidar_joint" type="fixed">
+		<parent link="base_link"/>
+		<child link="lidar_link"/>
+		<origin xyz="0 0 0.11" rpy="0 0 0"/>
+	</joint>
+
+
+	<!-- ==========================================
+	_________________ GAZEBO ______________________
+	=========================================== -->
+
+	<gazebo>
+		<plugin name="diff_drive" filename="libgazebo_ros_diff_drive.so">
+			<ros>
+				<namespace>/</namespace>
+				<remapping>cmd_vel:=cmd_vel_sim</remapping>
+				<remapping>odom:=hardware/odometry</remapping>
+			</ros>
+			<update_rate>50</update_rate>
+			<left_joint>front_left_wheel_joint</left_joint>
+			<right_joint>front_right_wheel_joint</right_joint>
+			<wheel_separation>0.44</wheel_separation>
+			<wheel_diameter>0.15</wheel_diameter>
+			<max_wheel_torque>50</max_wheel_torque>
+			<max_wheel_acceleration>5.0</max_wheel_acceleration>
+			<publish_odom>true</publish_odom>
+			<publish_odom_tf>true</publish_odom_tf>
+			<publish_wheel_tf>false</publish_wheel_tf>
+			<odometry_frame>odom</odometry_frame>
+			<robot_base_frame>base_footprint</robot_base_frame>
+		</plugin>
+
+		<plugin name="flipper_controller" filename="libflipper_controller.so">
+		</plugin>
+
+		<plugin name="joint_state_publisher" filename="libgazebo_ros_joint_state_publisher.so">
+			<ros>
+				<remapping>~/out:=joint_states</remapping>
+			</ros>
+			<update_rate>50</update_rate>
+			<joint_name>front_left_wheel_joint</joint_name>
+			<joint_name>front_right_wheel_joint</joint_name>
+			<joint_name>rear_left_wheel_joint</joint_name>
+			<joint_name>rear_right_wheel_joint</joint_name>
+			<joint_name>front_left_flipper_joint</joint_name>
+			<joint_name>front_right_flipper_joint</joint_name>
+			<joint_name>rear_left_flipper_joint</joint_name>
+			<joint_name>rear_right_flipper_joint</joint_name>
+		</plugin>
+	</gazebo>
+
+	<gazebo reference="base_link">
+		<material>Gazebo/Orange</material>
+		<selfCollide>false</selfCollide>
+	</gazebo>
+
+	<gazebo reference="front_left_flipper">
+		<material>Gazebo/Blue</material>
+	</gazebo>
+	<gazebo reference="rear_left_flipper">
+		<material>Gazebo/Blue</material>
+	</gazebo>
+	<gazebo reference="front_right_flipper">
+		<material>Gazebo/Green</material>
+	</gazebo>
+	<gazebo reference="rear_right_flipper">
+		<material>Gazebo/Green</material>
+	</gazebo>
+
+	<gazebo reference="front_left_wheel">
+		<mu1>1.0</mu1>
+		<mu2>1.0</mu2>
+		<kp>1000000</kp>
+		<kd>1</kd>
+	</gazebo>
+	<gazebo reference="front_right_wheel">
+		<mu1>1.0</mu1>
+		<mu2>1.0</mu2>
+		<kp>1000000</kp>
+		<kd>1</kd>
+	</gazebo>
+	<gazebo reference="rear_left_wheel">
+		<mu1>0.05</mu1>
+		<mu2>0.05</mu2>
+		<kp>1000000</kp>
+		<kd>1</kd>
+	</gazebo>
+	<gazebo reference="rear_right_wheel">
+		<mu1>0.05</mu1>
+		<mu2>0.05</mu2>
+		<kp>1000000</kp>
+		<kd>1</kd>
+	</gazebo>
+
+	<gazebo reference="camera_link">
+		<sensor type="camera" name="front_camera">
+			<update_rate>15</update_rate>
+			<always_on>true</always_on>
+			<visualize>false</visualize>
+			<camera name="front_camera">
+				<horizontal_fov>1.2</horizontal_fov>
+				<image>
+					<width>480</width>
+					<height>360</height>
+					<format>R8G8B8</format>
+				</image>
+				<clip>
+					<near>0.05</near>
+					<far>30</far>
+				</clip>
+				<noise>
+					<type>gaussian</type>
+					<mean>0.0</mean>
+					<stddev>0.002</stddev>
+				</noise>
+			</camera>
+			<plugin name="front_camera_controller" filename="libgazebo_ros_camera.so">
+				<ros>
+					<namespace>/camera</namespace>
+					<remapping>image_raw:=image_raw</remapping>
+					<remapping>camera_info:=camera_info</remapping>
+				</ros>
+				<camera_name>front</camera_name>
+				<frame_name>camera_link</frame_name>
+			</plugin>
+		</sensor>
+	</gazebo>
+
+	<gazebo reference="rear_camera_link">
+		<sensor type="camera" name="rear_camera">
+			<update_rate>10</update_rate>
+			<always_on>true</always_on>
+			<visualize>false</visualize>
+			<camera name="rear_camera">
+				<horizontal_fov>1.2</horizontal_fov>
+				<image>
+					<width>480</width>
+					<height>360</height>
+					<format>R8G8B8</format>
+				</image>
+				<clip>
+					<near>0.05</near>
+					<far>30</far>
+				</clip>
+			</camera>
+			<plugin name="rear_camera_controller" filename="libgazebo_ros_camera.so">
+				<ros>
+					<namespace>/camera</namespace>
+					<remapping>image_raw:=image_raw</remapping>
+					<remapping>camera_info:=camera_info</remapping>
+				</ros>
+				<camera_name>rear</camera_name>
+				<frame_name>rear_camera_link</frame_name>
+			</plugin>
+		</sensor>
+	</gazebo>
+
+	<gazebo reference="imu-link">
+		<sensor type="imu" name="imu_sensor">
+			<always_on>true</always_on>
+			<update_rate>50</update_rate>
+			<imu>
+				<angular_velocity>
+					<x><noise type="gaussian"><mean>0.0</mean><stddev>0.0002</stddev></noise></x>
+					<y><noise type="gaussian"><mean>0.0</mean><stddev>0.0002</stddev></noise></y>
+					<z><noise type="gaussian"><mean>0.0</mean><stddev>0.0002</stddev></noise></z>
+				</angular_velocity>
+				<linear_acceleration>
+					<x><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></x>
+					<y><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></y>
+					<z><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></z>
+				</linear_acceleration>
+			</imu>
+			<plugin name="imu_plugin" filename="libgazebo_ros_imu_sensor.so">
+				<ros>
+					<namespace>/hardware</namespace>
+					<remapping>~/out:=imu</remapping>
+				</ros>
+				<initial_orientation_as_reference>false</initial_orientation_as_reference>
+			</plugin>
+		</sensor>
+	</gazebo>
+
+	<gazebo reference="lidar_link">
+		<sensor type="ray" name="lidar_sensor">
+			<pose>0 0 0 0 0 0</pose>
+			<visualize>false</visualize>
+			<always_on>true</always_on>
+			<update_rate>12</update_rate>
+			<ray>
+				<scan>
+					<horizontal>
+						<samples>720</samples>
+						<resolution>1.0</resolution>
+						<min_angle>-3.14159</min_angle>
+						<max_angle>3.14159</max_angle>
+					</horizontal>
+				</scan>
+				<range>
+					<min>0.12</min>
+					<max>12.0</max>
+					<resolution>0.01</resolution>
+				</range>
+				<noise>
+					<type>gaussian</type>
+					<mean>0.0</mean>
+					<stddev>0.01</stddev>
+				</noise>
+			</ray>
+			<plugin name="lidar_controller" filename="libgazebo_ros_ray_sensor.so">
+				<ros>
+					<namespace>/</namespace>
+					<remapping>~/out:=scan</remapping>
+				</ros>
+				<output_type>sensor_msgs/LaserScan</output_type>
+				<frame_name>lidar_link</frame_name>
+			</plugin>
+		</sensor>
+	</gazebo>
+
+
+	<gazebo reference="third_person_camera_link">
+		<sensor type="camera" name="third_person_camera">
+			<update_rate>12</update_rate>
+			<always_on>true</always_on>
+			<visualize>false</visualize>
+			<camera name="third_person_camera">
+				<horizontal_fov>1.5</horizontal_fov>
+				<image>
+					<width>640</width>
+					<height>480</height>
+					<format>R8G8B8</format>
+				</image>
+				<clip>
+					<near>0.1</near>
+					<far>50</far>
+				</clip>
+			</camera>
+			<plugin name="third_person_camera_controller" filename="libgazebo_ros_camera.so">
+				<ros>
+					<namespace>/camera</namespace>
+					<remapping>image_raw:=image_raw</remapping>
+					<remapping>camera_info:=camera_info</remapping>
+				</ros>
+				<camera_name>third_person</camera_name>
+				<frame_name>third_person_camera_link</frame_name>
+			</plugin>
+		</sensor>
+	</gazebo>
+
+</robot>
