@@ -1,0 +1,5 @@
+# Minimal subset needed for lint + tests (tests avoid importing backend.app/cv2).
+pydantic-settings>=2.5
+websockets>=13.0
+pytest>=8.0
+ruff>=0.6
