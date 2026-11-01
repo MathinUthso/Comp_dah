@@ -4,6 +4,7 @@ pydantic-settings>=2.5
 websockets>=13.0
 opencv-python-headless>=4.10
 numpy>=1.26
+mediapipe>=0.10.14
 psutil>=6.0
 pyudev>=0.24
 # ROS2 dependencies are expected from the robot runtime environment:

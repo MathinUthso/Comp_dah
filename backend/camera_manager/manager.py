@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from backend.camera_manager.base import CameraSettings
 from backend.camera_manager.hdmi import HDMIReceiverCamera
 from backend.camera_manager.thermal import ThermalUSBCamera
 
@@ -39,6 +38,13 @@ class CameraManager:
         discovered = self.discover()
         hdmi_devices = [item["device"] for item in discovered["hdmi"] if item.get("is_hdmi")]
         thermal_devices = [item["device"] for item in discovered["thermal"] if item.get("is_thermal")]
+        all_hdmi_devices = [item["device"] for item in discovered["hdmi"]]
+        all_thermal_devices = [item["device"] for item in discovered["thermal"]]
+
+        if not hdmi_devices:
+            hdmi_devices = all_hdmi_devices
+        if not thermal_devices:
+            thermal_devices = all_thermal_devices
         for slot, device in zip(self.hdmi_slots, hdmi_devices, strict=False):
             if self._assignments[slot] is None:
                 self._assignments[slot] = device

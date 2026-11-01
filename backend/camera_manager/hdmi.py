@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import glob
 import os
-import subprocess
 import threading
-from dataclasses import asdict
 from typing import Any
 
 import cv2
 
-from backend.camera_manager.base import BaseCamera, CameraSettings
+from backend.camera_manager.base import BaseCamera
 
 
 class HDMIReceiverCamera(BaseCamera):
