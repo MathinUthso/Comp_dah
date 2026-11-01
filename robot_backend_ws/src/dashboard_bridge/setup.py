@@ -1,6 +1,5 @@
 from setuptools import find_packages, setup
 
-
 package_name = "dashboard_bridge"
 
 setup(
@@ -10,6 +9,7 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (f"share/{package_name}", ["package.xml"]),
+        (f"share/{package_name}/launch", ["launch/dashboard_bridge.launch.py"]),
     ],
     install_requires=["setuptools"],
     zip_safe=True,

@@ -15,5 +15,12 @@
 
   <exec_depend>rosbridge_server</exec_depend>
   <exec_depend>flexbe_core</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>camera_bridge</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
 
 </package>
