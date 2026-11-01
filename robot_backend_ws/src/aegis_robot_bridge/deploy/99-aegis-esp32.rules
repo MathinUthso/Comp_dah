@@ -1,0 +1,18 @@
+# Stable serial name for the ESP32 drive bridge, so the Pi bridge does not have
+# to guess /dev/ttyUSB* vs /dev/ttyACM*.
+#
+# Install with:
+#   sudo cp robot_backend_ws/src/aegis_robot_bridge/deploy/99-aegis-esp32.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# Then launch with: ros2 launch aegis_robot_bridge robot.launch.py port:=/dev/aegis-esp32
+
+# CP2102 / CP2104 (most ESP32 dev boards)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", SYMLINK+="aegis-esp32", MODE="0666"
+
+# CH340 / CH9102 (cheap ESP32 boards)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="aegis-esp32", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", SYMLINK+="aegis-esp32", MODE="0666"
+
+# Native USB-CDC ESP32-S3
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", SYMLINK+="aegis-esp32", MODE="0666"
