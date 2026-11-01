@@ -61,5 +61,44 @@ class RosBridgeClient:
         await self.send({"op": "subscribe", "topic": topic})
 
     async def graph_snapshot(self) -> dict[str, Any]:
-        await self.subscribe("/rosapi/nodes")
-        return {"status": "requested", "source": "rosbridge"}
+        calls = await asyncio.gather(
+            self.call_service("/rosapi/nodes", {}),
+            self.call_service("/rosapi/topics", {}),
+            self.call_service("/rosapi/services", {}),
+            self.call_service("/rosapi/get_time", {}),
+            return_exceptions=True,
+        )
+
+        def extract_list(response: Any, key: str) -> list[Any]:
+            if isinstance(response, Exception):
+                return []
+            values = response.get("values", {}) if isinstance(response, dict) else {}
+            data = values.get(key, [])
+            return data if isinstance(data, list) else []
+
+        nodes = extract_list(calls[0], "nodes")
+        topics = extract_list(calls[1], "topics")
+        services = extract_list(calls[2], "services")
+
+        ok = not isinstance(calls[0], Exception)
+        errors = [str(item) for item in calls if isinstance(item, Exception)]
+
+        return {
+            "ok": ok,
+            "status": "ready" if ok else "degraded",
+            "source": "rosbridge",
+            "graph": {
+                "nodes": nodes,
+                "topics": topics,
+                "services": services,
+                "publishers": len(topics),
+                "subscribers": len(topics),
+                "parameters": [],
+            },
+            "counts": {
+                "nodes": len(nodes),
+                "topics": len(topics),
+                "services": len(services),
+            },
+            "errors": errors,
+        }

@@ -4,24 +4,23 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi import HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from backend.api.routes import router as api_router
 from backend.camera_manager.manager import CameraManager
 from backend.config.service import ConfigService
-from backend.core.logging import StructuredLogger, configure_python_logging
+from backend.core.logging import configure_python_logging
 from backend.core.settings import get_settings
 from backend.debug.watchdog import Watchdog
 from backend.diagnostics.collector import DiagnosticsCollector
 from backend.flexbe_manager.adapter import FlexBEAdapter
 from backend.hardware_interface.critical import CriticalRosPublisher
-from backend.logs.service import LogService
 from backend.labview.service import LabViewService
+from backend.logs.service import LogService
 from backend.mission_control.service import MissionControlService
+from backend.ros_bridge.camera_status import RosCameraStatusService
 from backend.ros_bridge.client import RosBridgeClient
 from backend.state_sync.service import StateSyncService
 from backend.websocket.manager import WebSocketManager
@@ -32,7 +31,12 @@ def build_services() -> dict[str, Any]:
     configure_python_logging(settings.log_level)
     log_service = LogService()
     rosbridge = RosBridgeClient(settings.rosbridge_url)
-    critical = CriticalRosPublisher(settings.critical_estop_topic, settings.critical_halt_topic, settings.critical_reset_topic)
+    camera_status = RosCameraStatusService(settings.rosbridge_url)
+    critical = CriticalRosPublisher(
+        settings.critical_estop_service,
+        settings.critical_halt_topic,
+        settings.critical_reset_service,
+    )
     camera_manager = CameraManager()
     config_service = ConfigService(settings)
     state_sync = StateSyncService()
@@ -46,6 +50,7 @@ def build_services() -> dict[str, Any]:
         "settings": settings,
         "logs": log_service,
         "rosbridge": rosbridge,
+        "camera_status": camera_status,
         "critical": critical,
         "camera_manager": camera_manager,
         "config": config_service,
@@ -70,9 +75,11 @@ async def lifespan(app: FastAPI):
         await services["rosbridge"].connect()
     except Exception as exc:
         await services["logs"].publish("rosbridge", "WARN", "connect_failed", {"error": str(exc)})
+    await services["camera_status"].start()
     services["camera_manager"].start_all()
     services["watchdog"].register("diagnostics", services["diagnostics"].collect)
     yield
+    await services["camera_status"].stop()
     services["camera_manager"].stop_all()
     await services["rosbridge"].close()
 
@@ -92,7 +99,6 @@ def create_app() -> FastAPI:
 
     project_root = Path(__file__).resolve().parent.parent
     frontend_root = project_root / "frontend"
-    frontend_static = StaticFiles(directory=frontend_root, html=False)
 
     @app.get("/")
     async def index() -> Any:
@@ -102,10 +108,11 @@ def create_app() -> FastAPI:
     async def frontend_asset(asset_path: str) -> Any:
         if asset_path.startswith("api/") or asset_path.startswith("ws/"):
             raise HTTPException(status_code=404, detail="not found")
-        candidate = frontend_root / asset_path
-        if candidate.exists() and candidate.is_file():
+        frontend_dir = frontend_root.resolve()
+        candidate = (frontend_dir / asset_path).resolve()
+        if candidate.is_relative_to(frontend_dir) and candidate.is_file():
             return FileResponse(candidate)
-        return FileResponse(frontend_root / "index.html")
+        raise HTTPException(status_code=404, detail="not found")
 
     async def websocket_channel(websocket: WebSocket, channel: str) -> None:
         manager: WebSocketManager = app.state.services["websocket_manager"]
