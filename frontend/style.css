@@ -46,6 +46,22 @@
             align-items: center;
             gap: 10px;
         }
+        .emergency-banner {
+            height: 28px;
+            line-height: 28px;
+            text-align: center;
+            color: #fff;
+            background: repeating-linear-gradient(
+                45deg,
+                #cc0000,
+                #cc0000 12px,
+                #990000 12px,
+                #990000 24px
+            );
+            font-weight: bold;
+            letter-spacing: 1px;
+            border-bottom: 2px solid #000;
+        }
         .ros-status {
             border: 1px solid #000;
             padding: 2px 8px;
@@ -69,12 +85,12 @@
         .ros-offline { background: var(--apple-red); }
         .ros-degraded { background: var(--apple-orange); }
         .hero-container { display: grid; grid-template-columns: 3fr 1fr; gap: 12px; padding: 12px; flex-grow: 1; height: calc(100vh - 28px); }
-        .left-hero { display: grid; grid-template-rows: 3fr 1fr; gap: 12px; }
-        .left-hero-top { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 8px; height: 100%; }
-        .left-hero-bottom { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; height: 100%; }
+        .left-hero { display: grid; grid-template-rows: 3fr 1fr; gap: 12px; min-height: 0; }
+        .left-hero-top { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 8px; height: 100%; min-height: 0; }
+        .left-hero-bottom { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; height: 100%; min-height: 0; }
         .right-hero { display: grid; grid-template-rows: 2.2fr 1fr; gap: 12px; }
         
-        .window { background: var(--platinum); border: 1px solid #000; box-shadow: inset 1px 1px var(--bezel-light), 1px 1px #000; display: flex; flex-direction: column; overflow: hidden; }
+        .window { background: var(--platinum); border: 1px solid #000; box-shadow: inset 1px 1px var(--bezel-light), 1px 1px #000; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
         .title-bar { height: 20px; background: repeating-linear-gradient(0deg, #000, #000 1px, transparent 1px, transparent 2px); background-size: 100% 2px; margin: 2px 4px; border: 1px solid #000; background-clip: content-box; padding: 0 30px; }
         .content-area { flex-grow: 1; display: flex; justify-content: center; align-items: center; font-size: 11px; color: #333; font-weight: bold; text-align: center; }
 
@@ -88,7 +104,7 @@
         .status-pill { text-align: center; color: white; font-size: 9px; font-weight: bold; padding: 2px; border: 1px solid #000; width: 100%; height: 25%; }
 
         /* --- CAMERA GRID --- */
-        .cam-grid { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; width: 100%; height: 100%; background: #000; }
+        .cam-grid { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; width: 100%; height: 50%; background: #000; }
         .cam-item { background: #1a1a1a; border: 0.5px solid #444; color: #0f0; font-size: 9px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background 0.2s; }
         .cam-item:hover { background: #333; border-color: var(--apple-orange); z-index: 10; }
 
@@ -99,11 +115,19 @@
         .sys-pane { padding: 8px; font-size: 14px; flex-grow: 1; display: none; }
         .sys-pane.active { display: block; }
         .data-row { background: #fff; border: 1px solid #999; height: 30px; padding: 4px; margin-bottom: 3px; font-family: monospace; display: flex; justify-content: space-between; }
-        .sys-persistent-footer { height: 100px; background: #000; border-top: 2px solid var(--bezel-dark); position: relative; flex-shrink: 0; }
+        .sys-persistent-footer { height: 100px; background: #000; border-top: 2px solid var(--bezel-dark); position: relative; flex-shrink: 0; display: flex; gap: 6px; padding: 4px; }
+        .sys-log-shell { flex: 1 1 60%; min-width: 0; }
+        .footer-lidar-shell { flex: 1 1 40%; min-width: 0; display: flex; flex-direction: column; border: 1px solid #0f0; background: #050b08; }
+        .footer-lidar-titlebar { background: #111; color: #4dff9a; font-family: "Courier New", monospace; font-size: 9px; padding: 2px 6px; display: flex; justify-content: space-between; border-bottom: 1px solid #0f0; }
+        #lidar-canvas-footer { flex: 1 1 auto; width: 100%; height: 100%; display: block; }
         
         /* --- BEHAVIOR TREE --- */
-        .tab-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(10px, 1fr)); background: var(--apple-gray); border-bottom: 1px solid #000; }
-        .tab { padding: 6px; text-align: center; font-size: 10px; font-weight: bold; color: #ccc; cursor: pointer; border-right: 1px solid #333; }
+        .tab-strip { display: flex; gap: 0; background: var(--apple-gray); border: 1px solid #000; border-bottom: 1px solid #000; height: 30px; align-self: flex-start; overflow: hidden; }
+        .tab-strip-sys { width: 420px; }
+        .tab-strip-behavior { width: 320px; }
+        .tab { text-align: center; font-size: 10px; font-weight: bold; color: #ccc; cursor: pointer; border-right: 1px solid #333; white-space: nowrap; height: 100%; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+        .tab-strip-sys .tab { width: 70px; }
+        .tab-strip-behavior .tab { width: 80px; }
         .tab.active { background: var(--active-bg); color: #000; }
         .tab-body { flex-grow: 1; background: var(--active-bg); padding: 10px; display: none; }
         .tab-body.active { display: flex; flex-wrap: wrap; gap: 8px; align-items: start; }
@@ -114,6 +138,97 @@
         }
         .retro-btn:active { transform: translate(1px, 1px); box-shadow: 0 0 0; }
         .sub-btn-active { background: var(--apple-blue); color: white; }
+        .camera-status-header {
+            width: 100%;
+            padding: 6px;
+            border: 1px solid #000;
+            background: #ddd;
+            font-size: 10px;
+            font-weight: bold;
+            text-align: center;
+        }
+        .camera-tab-grid {
+            width: 100%;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-top: 8px;
+        }
+        .camera-card {
+            border: 1px solid #000;
+            background: #efefef;
+            padding: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            align-items: center;
+            justify-content: center;
+        }
+        .camera-card-title {
+            font-size: 10px;
+            font-weight: bold;
+        }
+        .camera-card-meta {
+            font-size: 9px;
+            width: 100%;
+            text-align: left;
+            font-family: monospace;
+        }
+        .camera-preview-shell {
+            position: relative;
+            overflow: hidden;
+            border: 2px solid #000;
+            background: #000;
+            aspect-ratio: 16 / 7;
+        }
+        .camera-preview-shell.detection-active {
+            border-color: #00e5ff;
+            box-shadow: 0 0 14px rgba(0, 229, 255, 0.45);
+        }
+        .camera-tab-detection-status {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            z-index: 6;
+            background: rgba(0, 0, 0, 0.75);
+            color: #9efcff;
+            border: 1px solid #00e5ff;
+            font-family: "Courier New", monospace;
+            font-size: 10px;
+            font-weight: bold;
+            padding: 4px 6px;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            pointer-events: none;
+        }
+        .camera-runtime-grid {
+            width: 100%;
+            margin-top: 6px;
+            padding: 6px;
+            border: 1px solid #000;
+            background: #f7f7f7;
+            display: grid;
+            gap: 4px;
+        }
+        .camera-runtime-row {
+            font-size: 9px;
+            font-family: monospace;
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .camera-health-pill {
+            border: 1px solid #000;
+            border-radius: 12px;
+            padding: 3px 8px;
+            font-size: 10px;
+            color: #fff;
+            font-weight: bold;
+            min-width: 80px;
+            text-align: center;
+        }
+        .health-good { background: var(--apple-green); }
+        .health-bad { background: var(--apple-red); }
         #persistent-logs::-webkit-scrollbar {
             width: 6px;
         }
@@ -131,8 +246,25 @@
         .log-warn { color: var(--apple-orange); }
         .log-err { color: var(--apple-red); }
 
-        .cam-window { background: #000; }
-        .cam-content { color: #0f0; }
+        .cam-window { background: #000; overflow: hidden; min-height: 0; height: 100%; }
+        .cam-content { 
+            color: #0f0; 
+            overflow: hidden !important;
+            min-height: 0;
+            height: 100%;
+            position: relative;
+        }
+        .cam-content img {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        .cam-content img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain !important;
+            display: block;
+        }
 
         .dp-u { grid-area: u; }
         .dp-l { grid-area: l; }
@@ -164,6 +296,41 @@
         .mission-reset-btn { background: var(--apple-red); color: #fff; }
 
         .main-display-default { background: #333; color: #aaa; }
+        #main-display {
+            position: relative;
+            overflow: hidden;
+            min-height: 0;
+            height: 100%;
+        }
+        #main-display img {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            background: #000;
+        }
+        .bottom-display-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+            height: 100%;
+            min-height: 0;
+            padding: 6px;
+            background: #111;
+        }
+        .bottom-display-grid .content-area {
+            min-height: 0;
+            height: 100%;
+        }
+        #lidar-canvas-bottom {
+            width: 100%;
+            height: 100%;
+            display: block;
+            background: #050b08;
+            border: 1px solid #0f0;
+        }
         #log-dump-content { flex-grow: 1; display: flex; }
 
         .full-height-window { height: 100%; }
@@ -226,9 +393,46 @@
             justify-content: center;
             font-size: 10px;
         }
-        .thermal-feed { border: 2px solid orange; color: orange; }
+        .thermal-feed { border: 2px solid orange; color: orange; position: relative; overflow: hidden; }
         .arm-feed-square { border: 2px solid #0f0; color: #0f0; position: relative; }
-        .motion-row { font-size: 14px; padding: 10px; }
+        .vision-overlay-box {
+            position: absolute;
+            border: 2px solid #00e5ff;
+            box-shadow: 0 0 8px rgba(0, 229, 255, 0.8), inset 0 0 6px rgba(0, 229, 255, 0.4);
+            pointer-events: none;
+            z-index: 5;
+            display: flex;
+            align-items: flex-start;
+            justify-content: flex-start;
+            padding: 4px;
+        }
+        .vision-overlay-label {
+            background: rgba(0, 100, 200, 0.8);
+            color: #00e5ff;
+            font-size: 11px;
+            font-weight: bold;
+            padding: 2px 6px;
+            border-radius: 2px;
+            white-space: nowrap;
+            border: 1px solid #00e5ff;
+            font-family: "Courier New", monospace;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .motion-row {
+            font-size: 14px;
+            padding: 10px;
+            font-weight: bold;
+            border: 1px solid transparent;
+            border-radius: 2px;
+            transition: all 0.3s ease;
+        }
+        .motion-row.detection-active {
+            background: rgba(0, 229, 255, 0.15);
+            border: 1px solid #00e5ff;
+            color: #00e5ff;
+            box-shadow: 0 0 8px rgba(0, 229, 255, 0.6);
+        }
         .proximity-panel { margin-top: 10px; padding: 5px; background: #fff; border: 1px solid #999; }
         .proximity-title { font-size: 8px; margin-bottom: 2px; }
         .proximity-bar {
@@ -238,6 +442,84 @@
             border: 1px solid #000;
         }
         .proximity-marker { position: absolute; left: 60%; top: 0; width: 2px; height: 100%; background: #000; }
+
+        /* --- LIDAR TAB --- */
+        .lidar-panel {
+            position: relative;
+            width: 100%;
+            height: 245px;
+            background: #050b08;
+            border: 2px solid #000;
+            box-shadow: inset 0 0 18px rgba(0, 255, 120, 0.12);
+            overflow: hidden;
+        }
+        #lidar-canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        .lidar-status {
+            position: absolute;
+            left: 6px;
+            top: 6px;
+            padding: 2px 6px;
+            background: rgba(0, 0, 0, 0.65);
+            border: 1px solid #0f6;
+            color: #4dff9a;
+            font-family: "Courier New", monospace;
+            font-size: 9px;
+            letter-spacing: 0.5px;
+        }
+        .lidar-status.stale {
+            border-color: #f90;
+            color: #ffb84d;
+        }
+        .lidar-legend {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 6px;
+            padding: 4px 6px;
+            background: #111;
+            color: #bbb;
+            font-family: "Courier New", monospace;
+            font-size: 8px;
+            border: 1px solid #000;
+        }
+        .lidar-legend span {
+            margin-left: auto;
+            color: #4dff9a;
+        }
+        .camera-no-signal {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #8a8a8a;
+            background: repeating-linear-gradient(45deg, #101010, #101010 8px, #171717 8px, #171717 16px);
+            font-family: "Courier New", monospace;
+            font-size: 9px;
+            letter-spacing: 1px;
+        }
+        .temperature-gauge {
+            height: 10px;
+            border: 1px solid #000;
+            background: #111;
+            margin: 2px 0 8px;
+        }
+        .temperature-gauge-fill {
+            height: 100%;
+            width: 0;
+            background: linear-gradient(90deg, #4caf50, #ffeb3b, #f44336);
+        }
+        .stale-data {
+            opacity: 0.6;
+        }
+        .disabled-btn {
+            opacity: 0.5;
+            pointer-events: none;
+        }
 
         .sys-log-shell {
             background: #000;

@@ -1,70 +1,34 @@
 const DEFAULT_BACKEND = 'http://127.0.0.1:8000';
 const API_BASE = location.protocol.startsWith('http') ? '' : DEFAULT_BACKEND;
-const WS_BASE = location.protocol.startsWith('http')
-  ? `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`
-  : 'ws://127.0.0.1:8000';
+const CAMERA_DEVICES = (window.RosDashboardConfig && window.RosDashboardConfig.cameraDevices) || {
+  video2: '/dev/video2',
+  webcam: '0',
+  webcamFallback: '/dev/video0',
+};
 
 let isSwapped = false;
 let timerInterval = null;
 let secondsElapsed = 0;
-let wsConnections = [];
-let cameraState = {
-  CAM_01: null,
-  CAM_02: null,
-  CAM_03: null,
-  CAM_04: null,
-  THERMAL: null,
-};
-let rosStatusInterval = null;
+let clockInterval = null;
+let heartbeatInterval = null;
 let cameraStatusInterval = null;
-
-function setRosStatus(state, detail = '') {
-  const badge = document.getElementById('ros-link-status');
-  if (!badge) return;
-  badge.classList.remove('ros-online', 'ros-offline', 'ros-degraded');
-  if (state === 'online') {
-    badge.classList.add('ros-online');
-    badge.textContent = 'ROS: ONLINE';
-    return;
-  }
-  if (state === 'degraded') {
-    badge.classList.add('ros-degraded');
-    badge.textContent = detail ? `ROS: DEGRADED (${detail})` : 'ROS: DEGRADED';
-    return;
-  }
-  badge.classList.add('ros-offline');
-  badge.textContent = detail ? `ROS: OFFLINE (${detail})` : 'ROS: OFFLINE';
-}
-
-function setCameraStatus(state, detail = '') {
-  const badge = document.getElementById('camera-link-status');
-  if (!badge) return;
-  badge.classList.remove('cam-online', 'cam-offline', 'cam-degraded');
-  if (state === 'online') {
-    badge.classList.add('cam-online');
-    badge.textContent = 'CAM: ONLINE';
-    return;
-  }
-  if (state === 'degraded') {
-    badge.classList.add('cam-degraded');
-    badge.textContent = detail ? `CAM: DEGRADED (${detail})` : 'CAM: DEGRADED';
-    return;
-  }
-  badge.classList.add('cam-offline');
-  badge.textContent = detail ? `CAM: OFFLINE (${detail})` : 'CAM: OFFLINE';
-}
-
-function evaluateCameraHealth(metadata) {
-  const slots = metadata?.slots || {};
-  const thermal = metadata?.thermal || {};
-  const slotHealth = Object.values(slots).map(item => !!item?.health?.connected);
-  const thermalConnected = !!thermal?.health?.connected;
-  const total = slotHealth.length + 1;
-  const connected = slotHealth.filter(Boolean).length + (thermalConnected ? 1 : 0);
-  if (connected === 0) return { state: 'offline', detail: `0/${total}` };
-  if (connected < total) return { state: 'degraded', detail: `${connected}/${total}` };
-  return { state: 'online', detail: `${connected}/${total}` };
-}
+let cameraMetadataInterval = null;
+let visionDetectionInterval = null;
+let activeSysTabId = 'sys-home';
+let lidarLastArrivalMs = 0;
+let lidarSmoothedRate = 0;
+let lidarLastRenderedTimestamp = 0;
+let lidarLastStale = true;
+let rosStore = null;
+let rosUnsubscribe = null;
+let latestRosState = null;
+let latestCameraStatus = null;
+let latestCameraMetadata = null;
+let latestVisionDetection = null;
+let latestVisionTile = 'CAM_01';
+let cameraPollErrorReported = false;
+let cameraMetadataPollErrorReported = false;
+let visionDetectionPollErrorReported = false;
 
 function apiUrl(path) {
   return `${API_BASE}${path}`;
@@ -80,148 +44,632 @@ async function apiRequest(path, options = {}) {
     throw new Error(`${response.status} ${response.statusText}: ${text}`);
   }
   const contentType = response.headers.get('content-type') || '';
-  if (contentType.includes('application/json')) return response.json();
+  if (contentType.includes('application/json')) {
+    return response.json();
+  }
   return response.text();
 }
 
-function connectWebSocket(channel, onMessage) {
-  const socket = new WebSocket(`${WS_BASE}/ws/${channel}`);
-  socket.onopen = () => addLog(`${channel.toUpperCase()} stream connected`, 'info');
-  socket.onmessage = event => {
-    try {
-      onMessage(JSON.parse(event.data));
-    } catch (error) {
-      addLog(`WS parse error on ${channel}: ${error.message}`, 'err');
-    }
-  };
-  socket.onerror = () => addLog(`${channel.toUpperCase()} stream error`, 'warn');
-  socket.onclose = () => {
-    addLog(`${channel.toUpperCase()} stream disconnected`, 'warn');
-    setTimeout(() => connectWebSocket(channel, onMessage), 2000);
-  };
-  wsConnections.push(socket);
-  return socket;
+function setRosStatus(state, detail = '') {
+  const badge = document.getElementById('ros-link-status');
+  if (!badge) {
+    return;
+  }
+  badge.classList.remove('ros-online', 'ros-offline', 'ros-degraded');
+  if (state === 'online') {
+    badge.classList.add('ros-online');
+    badge.textContent = 'ROS: ONLINE';
+    return;
+  }
+  if (state === 'degraded') {
+    badge.classList.add('ros-degraded');
+    badge.textContent = detail ? `ROS: RECONNECT (${detail})` : 'ROS: RECONNECT';
+    return;
+  }
+  badge.classList.add('ros-offline');
+  badge.textContent = detail ? `ROS: OFFLINE (${detail})` : 'ROS: OFFLINE';
 }
 
-function setupWebSockets() {
-  connectWebSocket('logs', payload => {
-    if (payload.event) {
-      addLog(`[${payload.module}] ${payload.event}`, payload.severity?.toLowerCase() || 'info');
-    } else if (payload.message) {
-      addLog(String(payload.message), 'info');
-    }
-  });
-
-  connectWebSocket('state', payload => {
-    const state = payload.payload || payload;
-    updateStatusPills(state);
-  });
-
-  connectWebSocket('camera_metadata', payload => {
-    renderCameraMetadata(payload);
-  });
-
-  connectWebSocket('ros_graph', payload => {
-    renderRosGraph(payload);
-    const ok = payload?.ok ?? payload?.status === 'requested';
-    setRosStatus(ok ? 'online' : 'degraded');
-  });
+function setCameraStatus(state, detail = '') {
+  const badge = document.getElementById('camera-link-status');
+  if (!badge) {
+    return;
+  }
+  badge.classList.remove('cam-online', 'cam-offline', 'cam-degraded');
+  if (state === 'online') {
+    badge.classList.add('cam-online');
+    badge.textContent = 'CAM: ONLINE';
+    return;
+  }
+  if (state === 'degraded') {
+    badge.classList.add('cam-degraded');
+    badge.textContent = detail ? `CAM: DEGRADED (${detail})` : 'CAM: DEGRADED';
+    return;
+  }
+  badge.classList.add('cam-offline');
+  badge.textContent = detail ? `CAM: OFFLINE (${detail})` : 'CAM: OFFLINE';
 }
 
-async function pollRosStatus() {
-  try {
-    const payload = await apiRequest('/api/v1/labview/ros-graph');
-    const ok = payload?.ok ?? payload?.status === 'requested';
-    if (ok) {
-      setRosStatus('online');
+function setCameraTileHealth(el, healthy) {
+  if (!el) {
+    return;
+  }
+  el.classList.remove('health-good', 'health-bad');
+  el.classList.add(healthy ? 'health-good' : 'health-bad');
+  el.textContent = healthy ? 'HEALTHY' : 'OFFLINE';
+}
+
+function updateCameraHealthUi(health) {
+  const video2Healthy = !!health?.video2_healthy;
+  const webcamHealthy = !!health?.webcam_healthy;
+  const primary = ['video2', 'webcam', 'none'].includes(health?.primary_source) ? health.primary_source : 'none';
+
+  setCameraTileHealth(document.getElementById('video2-health'), video2Healthy);
+  setCameraTileHealth(document.getElementById('webcam-health'), webcamHealthy);
+
+  const primaryBadge = document.getElementById('camera-primary-source');
+  if (primaryBadge) {
+    primaryBadge.textContent = `PRIMARY: ${String(primary).toUpperCase()}`;
+  }
+
+  if (primary === 'video2' && video2Healthy) {
+    setCameraStatus('online');
+  } else if (primary === 'webcam' && webcamHealthy) {
+    setCameraStatus('degraded', 'fallback');
+  } else if (video2Healthy || webcamHealthy) {
+    setCameraStatus('degraded', 'source switching');
+  } else {
+    setCameraStatus('offline', 'no live camera');
+  }
+}
+
+function updateCameraRuntimeUi(status, metadata) {
+  const bridgeConnected = document.getElementById('camera-bridge-connected');
+  if (bridgeConnected) {
+    bridgeConnected.textContent = status?.connected ? 'CONNECTED' : 'DISCONNECTED';
+    bridgeConnected.classList.toggle('text-green', !!status?.connected);
+    bridgeConnected.classList.toggle('text-red', !status?.connected);
+  }
+
+  const age = document.getElementById('camera-status-age');
+  if (age) {
+    if (status?.stale) {
+      age.textContent = status?.age_seconds == null ? 'STALE' : `STALE (${formatNumber(status.age_seconds, 1)}s)`;
+      age.classList.add('text-red');
+      age.classList.remove('text-green');
     } else {
-      setRosStatus('degraded', 'graph');
+      age.textContent = status?.age_seconds == null ? 'LIVE' : `LIVE (${formatNumber(status.age_seconds, 1)}s)`;
+      age.classList.add('text-green');
+      age.classList.remove('text-red');
     }
-  } catch (error) {
-    setRosStatus('offline', 'api');
+  }
+
+  const thermalDevice = document.getElementById('thermal-device');
+  if (thermalDevice) {
+    thermalDevice.textContent = metadata?.thermal?.device || '--';
+  }
+
+  const video2Device = document.getElementById('video2-device');
+  if (video2Device) {
+    video2Device.textContent = metadata?.slots?.CAM_01?.device || metadata?.slots?.CAM_02?.device || '--';
+  }
+
+  const webcamDevice = document.getElementById('webcam-device');
+  if (webcamDevice) {
+    webcamDevice.textContent = metadata?.slots?.CAM_03?.device || '--';
+  }
+
+  const video2Reconnects = document.getElementById('video2-reconnects');
+  if (video2Reconnects) {
+    const reconnects = metadata?.slots?.CAM_01?.health?.reconnects ?? metadata?.slots?.CAM_02?.health?.reconnects;
+    video2Reconnects.textContent = reconnects == null ? '--' : String(reconnects);
+  }
+
+  const webcamReconnects = document.getElementById('webcam-reconnects');
+  if (webcamReconnects) {
+    const reconnects = metadata?.slots?.CAM_03?.health?.reconnects;
+    webcamReconnects.textContent = reconnects == null ? '--' : String(reconnects);
   }
 }
 
-async function pollCameraStatus() {
-  try {
-    const payload = await apiRequest('/api/v1/cameras/metadata');
-    const health = evaluateCameraHealth(payload);
-    setCameraStatus(health.state, health.detail);
-  } catch (error) {
-    setCameraStatus('offline', 'api');
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (!el) {
+    return;
+  }
+  el.textContent = value;
+}
+
+function setRosCameraTile(containerId, imageId, dataUrl, stale, label) {
+  const container = document.getElementById(containerId);
+  if (!container) {
+    return;
+  }
+
+  let image = document.getElementById(imageId);
+  if (dataUrl && (!image || image.tagName !== 'IMG')) {
+    container.innerHTML = `<img id="${imageId}" alt="${label}" style="width:100%;height:100%;object-fit:contain;background:#000;display:block;">`;
+    image = document.getElementById(imageId);
+  }
+  if (!dataUrl || !image) {
+    return;
+  }
+
+  if (image.dataset.rosSrc !== dataUrl) {
+    image.dataset.rosSrc = dataUrl;
+    image.src = dataUrl;
+  }
+  image.classList.toggle('stale-data', !!stale);
+}
+
+function installMjpegFallback(image, label, timeoutMs = 3000) {
+  if (!image) {
+    return;
+  }
+  image.addEventListener('error', () => {
+    if (image.dataset.rosSrc) {
+      return;
+    }
+    const container = image.parentElement;
+    if (container) {
+      container.innerHTML = `<div class="camera-no-signal">${label}</div>`;
+    }
+  });
+
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    if (image.dataset.rosSrc) {
+      clearInterval(timer);
+      return;
+    }
+    if (image.naturalWidth > 0) {
+      clearInterval(timer);
+      return;
+    }
+    if (Date.now() - startedAt >= timeoutMs) {
+      clearInterval(timer);
+      const container = image.parentElement;
+      if (container && !image.dataset.rosSrc && image.naturalWidth === 0) {
+        container.innerHTML = `<div class="camera-no-signal">${label}</div>`;
+      }
+    }
+  }, 250);
+}
+
+function updateRosCameraTiles(state) {
+  setRosCameraTile(
+    'cam-01-feed',
+    'live-video2-feed',
+    state.telemetry.cameraVideo2DataUrl,
+    state.ui.stale.cameraVideo2,
+    'FRONT CAM / NO SIGNAL'
+  );
+  setRosCameraTile(
+    'usb-cam-feed',
+    'live-webcam-feed',
+    state.telemetry.cameraWebcamDataUrl,
+    state.ui.stale.cameraWebcam,
+    'REAR CAM / NO SIGNAL'
+  );
+}
+
+function getCameraPreviewDataUrl(state) {
+  const telemetry = state?.telemetry || {};
+  // The main preview prefers the third-person simulator camera when available.
+  if (telemetry.cameraDataUrl) {
+    return telemetry.cameraDataUrl;
+  }
+  const primary = telemetry?.cameraHealth?.primarySource;
+  if (primary === 'video2') {
+    return telemetry.cameraVideo2DataUrl || telemetry.cameraWebcamDataUrl || '';
+  }
+  if (primary === 'webcam') {
+    return telemetry.cameraWebcamDataUrl || telemetry.cameraVideo2DataUrl || '';
+  }
+  return telemetry.cameraVideo2DataUrl || telemetry.cameraWebcamDataUrl || '';
+}
+
+function nearestForwardLidarRange(scan) {
+  if (!scan || !Array.isArray(scan.ranges) || !Number.isFinite(scan.angleIncrement)) {
+    return NaN;
+  }
+  const halfAngle = Math.PI / 6;
+  let nearest = Infinity;
+  scan.ranges.forEach((value, index) => {
+    const distance = Number(value);
+    if (!Number.isFinite(distance) || distance < scan.rangeMin || distance > scan.rangeMax) {
+      return;
+    }
+    const rawAngle = scan.angleMin + index * scan.angleIncrement;
+    const angle = Math.atan2(Math.sin(rawAngle), Math.cos(rawAngle));
+    if (Math.abs(angle) <= halfAngle) {
+      nearest = Math.min(nearest, distance);
+    }
+  });
+  return Number.isFinite(nearest) ? nearest : NaN;
+}
+
+function drawLidarCanvas(canvas, scan, stale) {
+  if (!canvas) {
+    return;
+  }
+
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width < 2 || rect.height < 2) {
+    return;
+  }
+
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(1, Math.round(rect.width * dpr));
+  const height = Math.max(1, Math.round(rect.height * dpr));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+  ctx.fillStyle = '#050b08';
+  ctx.fillRect(0, 0, rect.width, rect.height);
+
+  const centerX = rect.width / 2;
+  const centerY = rect.height / 2;
+  const maxRange = Math.max(1, Math.min(20, Number(scan?.rangeMax) || 12));
+  const scale = (Math.min(rect.width, rect.height) * 0.45) / maxRange;
+
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(70, 255, 150, 0.22)';
+  [0.25, 0.5, 0.75, 1].forEach((fraction) => {
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, maxRange * scale * fraction, 0, Math.PI * 2);
+    ctx.stroke();
+  });
+
+  ctx.strokeStyle = 'rgba(70, 255, 150, 0.16)';
+  ctx.beginPath();
+  ctx.moveTo(centerX - maxRange * scale, centerY);
+  ctx.lineTo(centerX + maxRange * scale, centerY);
+  ctx.moveTo(centerX, centerY - maxRange * scale);
+  ctx.lineTo(centerX, centerY + maxRange * scale);
+  ctx.stroke();
+
+  ctx.fillStyle = 'rgba(70, 255, 150, 0.55)';
+  ctx.font = '8px "Courier New", monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('FWD', centerX, Math.max(10, centerY - maxRange * scale - 5));
+
+  let validCount = 0;
+  if (scan && Array.isArray(scan.ranges) && !stale) {
+    scan.ranges.forEach((value, index) => {
+      const distance = Number(value);
+      if (!Number.isFinite(distance) || distance < scan.rangeMin || distance > scan.rangeMax) {
+        return;
+      }
+      validCount += 1;
+      const angle = scan.angleMin + index * scan.angleIncrement;
+      // ROS: +X forward, +Y left. Canvas: forward is up, left is west.
+      const x = centerX - Math.sin(angle) * distance * scale;
+      const y = centerY - Math.cos(angle) * distance * scale;
+      const normalized = Math.min(1, distance / maxRange);
+      ctx.fillStyle = `hsl(${Math.round(130 - normalized * 130)}, 95%, 58%)`;
+      ctx.fillRect(x - 1, y - 1, 2, 2);
+    });
+  }
+
+  ctx.fillStyle = '#ffb000';
+  ctx.beginPath();
+  ctx.moveTo(centerX, centerY - 5);
+  ctx.lineTo(centerX - 4, centerY + 4);
+  ctx.lineTo(centerX + 4, centerY + 4);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function renderLidar(scan, stale) {
+  const canvases = Array.from(document.querySelectorAll('.lidar-canvas'));
+  if (canvases.length === 0) {
+    const fallback = document.getElementById('lidar-canvas');
+    if (fallback) {
+      canvases.push(fallback);
+    }
+  }
+  canvases.forEach((canvas) => drawLidarCanvas(canvas, scan, stale));
+
+  const nearest = nearestForwardLidarRange(scan);
+  setText('lidar-point-count', scan ? `${canvases.length ? (scan.ranges.filter((value) => Number.isFinite(Number(value)) && Number(value) >= scan.rangeMin && Number(value) <= scan.rangeMax).length) : 0}/${scan.ranges.length}` : '--');
+  setText('lidar-nearest', Number.isFinite(nearest) ? `${formatNumber(nearest, 2)} m` : '--');
+  setText('lidar-rate', lidarSmoothedRate > 0 ? `${formatNumber(lidarSmoothedRate, 1)} Hz` : '--');
+  setText('lidar-frame', scan?.frameId || '--');
+  setText('footer-lidar-nearest', Number.isFinite(nearest) ? `${formatNumber(nearest, 2)} m` : '--');
+
+  const status = document.getElementById('lidar-status');
+  if (status) {
+    status.textContent = scan && !stale ? 'LIVE /scan' : 'STALE / NO SCAN';
+    status.classList.toggle('stale', !scan || stale);
   }
 }
 
-function updateStatusPills(state) {
-  const pills = document.querySelectorAll('.cp-status-column .status-pill');
-  if (pills[0]) {
-    pills[0].textContent = state.ok ? 'OK' : 'FAULT';
-    pills[0].className = `status-pill ${state.ok ? 'status-ok' : 'status-fault'}`;
-  }
-  if (pills[1]) {
-    pills[1].textContent = state.autonomous ? 'Autonomous' : 'Manual';
-    pills[1].className = `status-pill ${state.autonomous ? 'status-autonomous' : 'status-manual'}`;
-  }
-  if (pills[2]) {
-    pills[2].textContent = `${Number(state.progress || 0)}%`;
-    pills[2].className = 'status-pill status-progress';
-  }
-
-  const victim = state.victim_detection;
-  const crateRed = document.getElementById('crate-red');
-  const crateGreen = document.getElementById('crate-green');
-  if (crateRed && crateGreen) {
-    crateRed.classList.toggle('on', !victim);
-    crateGreen.classList.toggle('on', !!victim);
+function updateLidarState(state) {
+  const timestamp = state.timestamps.lidar;
+  const stale = state.ui.stale.lidar;
+  const hasNewScan = timestamp !== lidarLastRenderedTimestamp;
+  if (hasNewScan) {
+    const now = performance.now();
+    if (lidarLastArrivalMs > 0) {
+      const dt = (now - lidarLastArrivalMs) / 1000;
+      if (dt > 0 && dt < 2) {
+        const instant = 1 / dt;
+        lidarSmoothedRate = lidarSmoothedRate > 0 ? lidarSmoothedRate * 0.85 + instant * 0.15 : instant;
+      }
+    }
+    lidarLastArrivalMs = now;
+    lidarLastRenderedTimestamp = timestamp;
   }
 
-  const railState = state.rail_status || 'idle';
-  const railRed = document.getElementById('linear-red');
-  const railGreen = document.getElementById('linear-green');
-  if (railRed && railGreen) {
-    railRed.classList.toggle('on', railState !== 'ready' && railState !== 'ok');
-    railGreen.classList.toggle('on', railState === 'ready' || railState === 'ok');
-  }
-
-  const omniState = state.omni_status || 'idle';
-  const omniRed = document.getElementById('omni-red');
-  const omniGreen = document.getElementById('omni-green');
-  if (omniRed && omniGreen) {
-    omniRed.classList.toggle('on', omniState !== 'ready' && omniState !== 'ok');
-    omniGreen.classList.toggle('on', omniState === 'ready' || omniState === 'ok');
+  if (hasNewScan || stale !== lidarLastStale) {
+    lidarLastStale = stale;
+    renderLidar(state.telemetry.lidar, stale);
   }
 }
 
-function renderCameraMetadata(payload) {
-  const panel = ensureLabViewPanel();
-  const meta = payload.payload || payload;
-  const health = evaluateCameraHealth(meta);
-  setCameraStatus(health.state, health.detail);
-  if (!panel) return;
-  const target = panel.querySelector('#labview-camera-metadata');
-  if (target) {
-    target.textContent = JSON.stringify(meta, null, 2);
+function updateRightTabRuntimeFields(state) {
+  const temperature = Number(state?.telemetry?.thermal?.temperature);
+  const proximity = Number(state?.telemetry?.proximity?.range);
+  const cameraStale = !!state?.ui?.stale?.camera;
+  const cameraHealthy = !cameraStale && !!getCameraPreviewDataUrl(state);
+
+  let hazmat = 'CLEAR';
+  if (Number.isFinite(temperature) && temperature >= 55) {
+    hazmat = 'DETECTED (HEAT)';
+  } else if (Number.isFinite(temperature) && temperature >= 40) {
+    hazmat = 'ELEVATED';
+  }
+
+  const pressure = Number.isFinite(proximity) ? `${formatNumber(101.3 + (0.5 - Math.min(Math.max(proximity, 0), 1.0)), 2)} kPa` : '--';
+  const acuity = cameraHealthy ? 'VISUAL_OK' : 'DEGRADED';
+  const qr = latestVisionDetection?.target_id || '--';
+  const motion = latestVisionDetection?.detected ? 'DETECTED' : 'NO MOTION';
+  const box = latestVisionDetection?.box
+    ? `${latestVisionDetection.box.x.toFixed(2)},${latestVisionDetection.box.y.toFixed(2)} ${latestVisionDetection.box.w.toFixed(2)}x${latestVisionDetection.box.h.toFixed(2)}`
+    : '--';
+
+  setText('inspect-hazmat', hazmat);
+  setText('inspect-pressure', pressure);
+  setText('inspect-acuity', acuity);
+  setText('inspect-qr', qr);
+
+  setText('insert-target-lock', latestVisionDetection?.detected ? 'LOCKED' : 'SEARCHING');
+  setText('insert-box', box);
+
+  setText('crate-motion', motion);
+  setText('crate-hazmat', hazmat);
+  setText('crate-acuity', acuity);
+  setText('crate-qr', qr);
+  
+  // Highlight motion row when detection is active
+  const motionRow = document.querySelector('.motion-row');
+  if (motionRow) {
+    if (latestVisionDetection?.detected) {
+      motionRow.classList.add('detection-active');
+    } else {
+      motionRow.classList.remove('detection-active');
+    }
   }
 }
 
-function renderRosGraph(payload) {
-  const panel = ensureLabViewPanel();
-  if (!panel) return;
-  const target = panel.querySelector('#labview-ros-graph');
-  if (target) {
-    target.textContent = JSON.stringify(payload, null, 2);
+function updateVisionOverlay() {
+  const previewShell = document.getElementById('camera-preview-shell');
+  const statusChip = document.getElementById('camera-tab-detection-status');
+  const overlays = [
+    document.getElementById('vision-overlay-box'),
+    document.getElementById('vision-overlay-inspect'),
+    document.getElementById('vision-overlay-insert'),
+    document.getElementById('camera-tab-vision-overlay'),
+  ];
+
+  const detected = !!latestVisionDetection?.detected && !!latestVisionDetection?.box;
+  const summary = detected
+    ? `${latestVisionDetection.box.gesture || latestVisionDetection.target_id || 'DETECTED'} ${latestVisionDetection.box.confidence ? `${(latestVisionDetection.box.confidence * 100).toFixed(0)}%` : ''}`.trim()
+    : 'SEARCHING';
+
+  if (previewShell) {
+    previewShell.classList.toggle('detection-active', detected);
   }
+  if (statusChip) {
+    statusChip.textContent = detected ? `MEDIAPIPE: ${latestVisionTile} ${summary}` : `MEDIAPIPE: ${latestVisionTile} SEARCHING`;
+  }
+
+  setCameraTabPreviewTile(latestVisionTile);
+  
+  overlays.forEach(overlay => {
+    if (!overlay) {
+      return;
+    }
+    if (!detected) {
+      overlay.classList.add('hidden');
+      return;
+    }
+
+    const box = latestVisionDetection.box;
+    overlay.style.left = `${Math.max(0, Math.min(1, box.x)) * 100}%`;
+    overlay.style.top = `${Math.max(0, Math.min(1, box.y)) * 100}%`;
+    overlay.style.width = `${Math.max(0, Math.min(1, box.w)) * 100}%`;
+    overlay.style.height = `${Math.max(0, Math.min(1, box.h)) * 100}%`;
+    overlay.classList.remove('hidden');
+
+    // Update gesture label
+    const label = overlay.querySelector('.vision-overlay-label');
+    if (label) {
+      const gesture = box.gesture || latestVisionDetection.target_id || 'DETECTED';
+      const confidence = box.confidence ? `${(box.confidence * 100).toFixed(0)}%` : '';
+      label.textContent = confidence ? `${gesture} ${confidence}` : gesture;
+    }
+  });
 }
 
 function addLog(msg, type = 'info') {
   const container = document.getElementById('persistent-logs');
-  if (!container) return;
+  if (!container) {
+    return;
+  }
   const time = new Date().toLocaleTimeString('en-GB', { hour12: false });
   const entry = document.createElement('div');
   entry.className = `log-entry ${type === 'warn' ? 'log-warn' : type === 'err' ? 'log-err' : ''}`;
   entry.textContent = `[${time}] ${msg}`;
   container.appendChild(entry);
   container.scrollTop = container.scrollHeight;
+}
+
+function formatNumber(value, digits = 2) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) {
+    return '--';
+  }
+  return num.toFixed(digits);
+}
+
+function updateDataText(id, text, stale) {
+  const el = document.getElementById(id);
+  if (!el) {
+    return;
+  }
+  el.textContent = text;
+  el.classList.toggle('stale-data', !!stale);
+}
+
+function applyRosState(state) {
+  if (!state) {
+    return;
+  }
+  latestRosState = state;
+
+  const connectionStatus = state.connection.status;
+  if (connectionStatus === 'connected') {
+    setRosStatus('online');
+  } else if (connectionStatus === 'connecting' || connectionStatus === 'reconnecting') {
+    setRosStatus('degraded', state.connection.detail || `#${state.connection.reconnectAttempt}`);
+  } else {
+    setRosStatus('offline', state.connection.detail || 'down');
+  }
+
+  const proximity = state.telemetry.proximity;
+  const proximityStale = state.ui.stale.proximity;
+  const distance = proximity ? proximity.range : NaN;
+  const warning = Number.isFinite(distance) && distance < 0.30 && !proximityStale;
+  updateDataText('obstacle-distance', `${formatNumber(distance, 3)} m`, proximityStale);
+  const obstacleEl = document.getElementById('obstacle-distance');
+  if (obstacleEl) {
+    obstacleEl.classList.toggle('text-red', warning);
+  }
+  const marker = document.querySelector('.proximity-marker');
+  if (marker && Number.isFinite(distance)) {
+    const normalized = Math.max(0, Math.min(1, distance / 2.0));
+    marker.style.left = `${Math.round(normalized * 100)}%`;
+  }
+
+  const thermal = state.telemetry.thermal;
+  const thermalTemp = thermal ? thermal.temperature : NaN;
+  updateDataText('temperature-value', `${formatNumber(thermalTemp, 1)} C`, state.ui.stale.thermal);
+  const gauge = document.getElementById('temperature-gauge-fill');
+  if (gauge) {
+    const clamped = Math.max(0, Math.min(100, Number(thermalTemp)));
+    gauge.style.width = `${clamped}%`;
+  }
+
+  const odom = state.telemetry.odometry;
+  updateDataText(
+    'position-value',
+    odom ? `x: ${formatNumber(odom.x)} y: ${formatNumber(odom.y)}` : 'x: -- y: --',
+    state.ui.stale.odometry
+  );
+  updateDataText('heading-value', odom ? `${formatNumber(odom.headingDeg, 1)} deg` : '-- deg', state.ui.stale.odometry);
+  updateDataText(
+    'velocity-value',
+    odom ? `lin: ${formatNumber(odom.linearX)} ang: ${formatNumber(odom.angularZ)}` : 'lin: -- ang: --',
+    state.ui.stale.odometry
+  );
+
+  const imu = state.telemetry.imu;
+  void imu;
+
+  const diagnostics = state.telemetry.diagnostics;
+  const diagStale = state.ui.stale.diagnostics;
+  updateDataText(
+    'diag-battery',
+    diagnostics ? `${diagnostics.battery.message} | ${diagnostics.battery.value}` : '--',
+    diagStale
+  );
+  updateDataText('diag-cpu', diagnostics ? `${diagnostics.cpu.message} | ${diagnostics.cpu.value}` : '--', diagStale);
+  updateDataText(
+    'diag-memory',
+    diagnostics ? `${diagnostics.memory.message} | ${diagnostics.memory.value}` : '--',
+    diagStale
+  );
+
+  const emergencyActive = !!state.telemetry.emergency;
+  const banner = document.getElementById('emergency-banner');
+  if (banner) {
+    banner.classList.toggle('hidden', !emergencyActive);
+  }
+  const estopButton = document.getElementById('estop-btn');
+  if (estopButton) {
+    estopButton.disabled = !!state.actions.estopPending;
+    estopButton.classList.toggle('disabled-btn', !!state.actions.estopPending);
+  }
+
+  const behavior = state.telemetry.flexbeStatus || state.actions.behaviorLabel || 'idle';
+  updateDataText('active-behavior', String(behavior).toUpperCase(), state.ui.stale.flexbeStatus);
+
+  const preview = document.getElementById('camera-preview');
+  const previewDataUrl = getCameraPreviewDataUrl(state);
+  if (preview && previewDataUrl) {
+    const nextSrc = previewDataUrl;
+    if (preview.dataset.rosSrc !== nextSrc) {
+      preview.dataset.rosSrc = nextSrc;
+      preview.src = nextSrc;
+    }
+    preview.classList.toggle('stale-data', state.ui.stale.camera);
+  }
+
+  if (!isSwapped) {
+    const mainDisplay = document.getElementById('main-display');
+    const mainDataUrl = state.telemetry.cameraDataUrl;
+    if (mainDisplay && mainDataUrl) {
+      if (mainDisplay.dataset.rosSrc !== mainDataUrl) {
+        mainDisplay.dataset.rosSrc = mainDataUrl;
+        mainDisplay.innerHTML = `<img src="${mainDataUrl}" alt="THIRD_PERSON" style="width:100%;height:100%;object-fit:contain;background:#000;">`;
+        mainDisplay.classList.remove('main-display-default');
+      }
+    }
+  }
+
+  updateRosCameraTiles(state);
+  updateLidarState(state);
+
+  if (!state.ui.stale.cameraHealth) {
+    updateCameraHealthUi({
+      video2_healthy: state.telemetry.cameraHealth.video2Healthy,
+      webcam_healthy: state.telemetry.cameraHealth.webcamHealthy,
+      primary_source: state.telemetry.cameraHealth.primarySource,
+    });
+  } else if (latestCameraStatus) {
+    updateCameraHealthUi(latestCameraStatus);
+  } else {
+    setCameraStatus('degraded', 'waiting for camera bridge');
+  }
+
+  updateCameraRuntimeUi(latestCameraStatus, latestCameraMetadata);
+  updateRightTabRuntimeFields(state);
+  updateVisionOverlay();
+
+  if (state.ui.lastError) {
+    const previous = window.__lastRosError;
+    if (previous !== state.ui.lastError) {
+      addLog(`ROS error: ${state.ui.lastError}`, 'err');
+      window.__lastRosError = state.ui.lastError;
+    }
+  }
 }
 
 function toggleDashboard() {
@@ -271,18 +719,27 @@ function switchTab(idx) {
 
 function switchSysTab(evt, tabId) {
   const panes = document.querySelectorAll('.sys-pane');
-  panes.forEach(p => p.classList.remove('active'));
+  panes.forEach((p) => p.classList.remove('active'));
   const tabs = document.querySelectorAll('.sys-tab');
-  tabs.forEach(t => t.classList.remove('active'));
+  tabs.forEach((t) => t.classList.remove('active'));
   const pane = document.getElementById(tabId);
-  if (pane) pane.classList.add('active');
+  if (pane) {
+    pane.classList.add('active');
+  }
   evt.currentTarget.classList.add('active');
+  activeSysTabId = tabId;
+  if (tabId === 'sys-lidar' && latestRosState) {
+    renderLidar(latestRosState.telemetry.lidar, latestRosState.ui.stale.lidar);
+  }
 }
 
 function toggleInspectMode(mode) {
   document.getElementById('btn-linear').classList.toggle('sub-btn-active', mode === 'linear');
   document.getElementById('btn-omni').classList.toggle('sub-btn-active', mode === 'omni');
   const fields = document.getElementById('inspect-fields');
+  if (!fields) {
+    return;
+  }
   fields.style.opacity = '0.5';
   setTimeout(() => {
     fields.style.opacity = '1';
@@ -303,18 +760,24 @@ function simulateDrill() {
 }
 
 function startMission() {
-  if (timerInterval) return;
+  if (timerInterval) {
+    return;
+  }
   addLog('MISSION SEQUENCE STARTED', 'warn');
   document.getElementById('start-btn').disabled = true;
   document.getElementById('start-btn').style.opacity = '0.5';
-  apiRequest('/api/v1/mission/start', { method: 'POST' }).catch(err => addLog(err.message, 'err'));
+  apiRequest('/api/v1/mission/start', { method: 'POST' }).catch((err) => addLog(err.message, 'err'));
   timerInterval = setInterval(() => {
     secondsElapsed += 1;
-    const mins = Math.floor(secondsElapsed / 60).toString().padStart(2, '0');
+    const mins = Math.floor(secondsElapsed / 60)
+      .toString()
+      .padStart(2, '0');
     const secs = (secondsElapsed % 60).toString().padStart(2, '0');
     document.getElementById('mission-timer').innerText = `${mins}:${secs}`;
     const progress = document.querySelector('.status-progress');
-    if (progress) progress.textContent = `${Math.min(100, secondsElapsed)}%`;
+    if (progress) {
+      progress.textContent = `${Math.min(100, secondsElapsed)}%`;
+    }
   }, 1000);
 }
 
@@ -323,146 +786,509 @@ function resetMission() {
   timerInterval = null;
   secondsElapsed = 0;
   document.getElementById('mission-timer').innerText = '00:00';
-  document.getElementById('mission-timer').style.color = 'var(--apple-green)';
   document.getElementById('start-btn').disabled = false;
   document.getElementById('start-btn').style.opacity = '1';
   document.getElementById('persistent-logs').innerHTML = '<div>[SYSTEM] LOGS PURGED. READY FOR NEW SESSION.</div>';
-  document.getElementById('crate-red').classList.add('on');
-  document.getElementById('crate-green').classList.remove('on');
-  document.getElementById('linear-red').classList.add('on');
-  document.getElementById('linear-green').classList.remove('on');
-  document.getElementById('omni-red').classList.add('on');
-  document.getElementById('omni-green').classList.remove('on');
   addLog('MASTER RESET PERFORMED', 'err');
-  apiRequest('/api/v1/mission/reset', { method: 'POST' }).catch(err => addLog(err.message, 'err'));
+  apiRequest('/api/v1/mission/reset', { method: 'POST' }).catch((err) => addLog(err.message, 'err'));
 }
 
-function estopMission() {
-  addLog('E-STOP TRIGGERED', 'err');
-  apiRequest('/api/v1/mission/estop', { method: 'POST' }).catch(err => addLog(err.message, 'err'));
+async function estopMission() {
+  if (!rosStore) {
+    addLog('E-STOP unavailable: ROS store not initialized', 'err');
+    return;
+  }
+  addLog('E-STOP REQUESTED', 'warn');
+  stopKeyboardMovement();
+  try {
+    const response = await rosStore.triggerEstop();
+    addLog(`E-STOP response: ${JSON.stringify(response)}`, 'info');
+  } catch (error) {
+    addLog(`E-STOP failed: ${error.message}`, 'err');
+  }
+}
+
+const keyboardMovementKeys = new Set();
+const keyboardKeyMap = {
+  ArrowUp: { linear: 0.5, angular: 0 },
+  ArrowDown: { linear: -0.5, angular: 0 },
+  ArrowLeft: { linear: 0, angular: 1.0 },
+  ArrowRight: { linear: 0, angular: -1.0 },
+};
+
+function keyboardCommandFromPressed() {
+  let linear = 0;
+  let angular = 0;
+  if (keyboardMovementKeys.has("ArrowUp")) {
+    linear += 0.5;
+  }
+  if (keyboardMovementKeys.has("ArrowDown")) {
+    linear -= 0.5;
+  }
+  if (keyboardMovementKeys.has("ArrowLeft")) {
+    angular += 1.0;
+  }
+  if (keyboardMovementKeys.has("ArrowRight")) {
+    angular -= 1.0;
+  }
+  return { linear, angular };
+}
+
+// Real robots need a command stream, not a single message per key press: the
+// drive bridge zeroes /cmd_vel when it stops arriving. Re-publish while held.
+const MOVE_STREAM_INTERVAL_MS = 100;
+let movementStreamTimer = null;
+let movementStreamPublisher = null;
+
+function publishSafely(action, label) {
+  if (!rosStore) {
+    return;
+  }
+  try {
+    action();
+  } catch (error) {
+    addLog(`${label}: ${error.message}`, "err");
+  }
+}
+
+function startMovementStream(publisher) {
+  stopMovementStream(false);
+  movementStreamPublisher = publisher;
+  publishSafely(publisher, "cmd_vel publish failed");
+  movementStreamTimer = setInterval(() => publishSafely(movementStreamPublisher, "cmd_vel publish failed"), MOVE_STREAM_INTERVAL_MS);
+}
+
+function stopMovementStream(sendStop = true) {
+  if (movementStreamTimer !== null) {
+    clearInterval(movementStreamTimer);
+    movementStreamTimer = null;
+  }
+  movementStreamPublisher = null;
+  if (sendStop) {
+    publishSafely(() => rosStore.stopCmdVel(), "cmd_vel stop failed");
+  }
+}
+
+function publishKeyboardCommand() {
+  const command = keyboardCommandFromPressed();
+  publishSafely(() => rosStore.publishCmdVel(command.linear, command.angular), "keyboard cmd_vel publish failed");
+}
+
+function ensureKeyboardStream() {
+  if (movementStreamTimer === null) {
+    startMovementStream(publishKeyboardCommand);
+  }
+}
+
+function isTypingTarget(target) {
+  if (!target) {
+    return false;
+  }
+  const tag = String(target.tagName || "").toLowerCase();
+  return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable;
+}
+
+function handleKeyboardMovement(event) {
+  if (!rosStore || isTypingTarget(event.target) || !keyboardKeyMap[event.key]) {
+    return;
+  }
+  event.preventDefault();
+  if (event.type === "keydown") {
+    if (event.repeat) {
+      return;
+    }
+    keyboardMovementKeys.add(event.key);
+  } else {
+    keyboardMovementKeys.delete(event.key);
+  }
+  if (keyboardMovementKeys.size === 0) {
+    stopKeyboardMovement();
+    return;
+  }
+  ensureKeyboardStream();
+}
+
+function stopKeyboardMovement() {
+  keyboardMovementKeys.clear();
+  stopMovementStream();
+}
+
+const FLIPPER_MIN_RAD = -1.5708; // matches the URDF flipper joint limits: 90 deg down
+const FLIPPER_MAX_RAD = 1.5708; // 90 deg up
+const FLIPPER_STEP_RAD = 0.15; // one key press ~= 8.6 degrees
+const FLIPPER_JOINTS = [
+  "front_left_flipper_joint",
+  "front_right_flipper_joint",
+  "rear_left_flipper_joint",
+  "rear_right_flipper_joint",
+];
+const flipperTargets = {};
+
+function clampFlipperAngle(value) {
+  return Math.min(FLIPPER_MAX_RAD, Math.max(FLIPPER_MIN_RAD, value));
+}
+
+// Step from the last commanded angle so rapid presses accumulate instead of being
+// swallowed; fall back to the live joint angle so the first press starts where the
+// flipper actually is.
+function nextFlipperTarget(joint, direction) {
+  const live = rosStore && rosStore.state ? Number(rosStore.state.flippers[joint]) : NaN;
+  const commanded = flipperTargets[joint];
+  const base = Number.isFinite(commanded) ? commanded : live;
+  const next = clampFlipperAngle((Number.isFinite(base) ? base : 0) + direction * FLIPPER_STEP_RAD);
+  flipperTargets[joint] = next;
+  return next;
+}
+
+function handleFlipperKeys(event) {
+  if (!rosStore || isTypingTarget(event.target)) {
+    return;
+  }
+  const key = String(event.key || "").toLowerCase();
+  if (!["q", "e", "a", "d", "t"].includes(key)) {
+    return;
+  }
+  event.preventDefault();
+
+  if (event.type !== "keydown" || event.repeat) {
+    return;
+  }
+
+  if (key === "t") {
+    // T = dog stance (all four straight down), Shift+T = back to normal.
+    const position = event.shiftKey ? 0 : FLIPPER_MIN_RAD;
+    try {
+      const targets = FLIPPER_JOINTS.map((joint) => {
+        flipperTargets[joint] = position;
+        return position;
+      });
+      rosStore.publishFlipperCommand(FLIPPER_JOINTS, targets);
+      addLog(event.shiftKey ? "Normal stance: flippers back to neutral" : "Dog stance: all flippers 90 deg down", "info");
+    } catch (error) {
+      addLog(`flipper command failed: ${error.message}`, "err");
+    }
+    return;
+  }
+
+  const isFront = key === "q" || key === "e";
+  const leftJoint = isFront ? "front_left_flipper_joint" : "rear_left_flipper_joint";
+  const rightJoint = isFront ? "front_right_flipper_joint" : "rear_right_flipper_joint";
+
+  let down = event.ctrlKey;
+  if (event.shiftKey && (key === "e" || key === "d")) {
+    down = true;
+  }
+  if (event.shiftKey && (key === "q" || key === "a")) {
+    down = false;
+  }
+  const direction = down ? -1 : 1;
+
+  const joints = event.shiftKey
+    ? [leftJoint, rightJoint]
+    : key === "q" || key === "a"
+      ? [leftJoint]
+      : [rightJoint];
+
+  try {
+    const targets = joints.map((joint) => nextFlipperTarget(joint, direction));
+    rosStore.publishFlipperCommand(joints, targets);
+    const detail = joints.map((joint, index) => `${joint.replace("_flipper_joint", "")}=${targets[index].toFixed(2)}`).join(", ");
+    addLog(`Flipper ${detail}`, "info");
+  } catch (error) {
+    addLog(`flipper command failed: ${error.message}`, "err");
+  }
+}
+
+function wireKeyboardControls() {
+  if (!rosStore) {
+    return;
+  }
+  window.addEventListener("keydown", handleKeyboardMovement);
+  window.addEventListener("keyup", handleKeyboardMovement);
+  window.addEventListener("keydown", handleFlipperKeys);
+  window.addEventListener("blur", stopKeyboardMovement);
 }
 
 function wireDpad() {
-  const mapping = { 'dp-u': 'up', 'dp-l': 'left', 'dp-r': 'right', 'dp-d': 'down' };
-  Object.entries(mapping).forEach(([cls, dir]) => {
+  if (!rosStore) {
+    return;
+  }
+  const mapping = {
+    'dp-u': { linear: 0.5, angular: 0 },
+    'dp-d': { linear: -0.5, angular: 0 },
+    'dp-l': { linear: 0, angular: 1.0 },
+    'dp-r': { linear: 0, angular: -1.0 },
+  };
+
+  Object.entries(mapping).forEach(([cls, cmd]) => {
     const node = document.querySelector(`.${cls}`);
-    if (!node) return;
+    if (!node) {
+      return;
+    }
     node.style.cursor = 'pointer';
-    node.addEventListener('click', () => apiRequest(`/api/v1/mission/dpad/${dir}`, { method: 'POST' }).catch(err => addLog(err.message, 'err')));
+
+    const start = (event) => {
+      event.preventDefault();
+      startMovementStream(() => rosStore.publishCmdVel(cmd.linear, cmd.angular));
+    };
+
+    const stop = (event) => {
+      event.preventDefault();
+      stopMovementStream();
+    };
+
+    node.addEventListener('pointerdown', start);
+    node.addEventListener('pointerup', stop);
+    node.addEventListener('pointerleave', stop);
+    node.addEventListener('touchstart', start, { passive: false });
+    node.addEventListener('touchend', stop, { passive: false });
   });
 }
 
 function wireBehaviorButtons() {
-  const buttons = Array.from(document.querySelectorAll('.behavior-panel .tab-body .retro-btn'));
-  buttons.forEach(btn => {
-    const label = (btn.textContent || '').trim();
+  if (!rosStore) {
+    return;
+  }
+  const buttons = Array.from(document.querySelectorAll('.behavior-btn'));
+  buttons.forEach((btn) => {
     btn.style.cursor = 'pointer';
     btn.addEventListener('click', async () => {
+      const behaviorId = Number(btn.getAttribute('data-behavior-id'));
       try {
-        if (label === 'SLAM') {
-          await apiRequest('/api/v1/mission/behavior/start?behavior=SLAM', { method: 'POST' });
-        } else if (label === 'Move to waypoint') {
-          await apiRequest('/api/v1/mission/behavior/start?behavior=move_to_waypoint', { method: 'POST' });
-        } else if (label === 'Explore') {
-          await apiRequest('/api/v1/mission/behavior/start?behavior=explore', { method: 'POST' });
-        } else if (label === 'Arm') {
-          await apiRequest('/api/v1/mission/behavior/start?behavior=arm', { method: 'POST' });
-        } else if (label === 'Recalibrate') {
-          await apiRequest('/api/v1/mission/behavior/reset?behavior=recalibrate', { method: 'POST' });
-        } else if (label === 'Admin System') {
-          showLabView();
-        }
-        addLog(`Behavior command: ${label}`, 'info');
+        const response = await rosStore.executeBehavior(behaviorId);
+        addLog(`Behavior ${behaviorId} sent: ${JSON.stringify(response)}`, 'info');
       } catch (error) {
-        addLog(error.message, 'err');
+        addLog(`Behavior failed: ${error.message}`, 'err');
       }
     });
   });
 }
 
-function renderCameraTiles() {
-  const tiles = Array.from(document.querySelectorAll('#top-area .cam-window .cam-content'));
-  const slots = ['CAM_01', 'CAM_02', 'CAM_03', 'CAM_04'];
-  tiles.forEach((tile, index) => {
-    const slot = slots[index];
-    tile.innerHTML = `<img src="${apiUrl(`/api/v1/cameras/${slot}/stream.mjpeg`)}" alt="${slot}" style="width:100%;height:100%;object-fit:cover;background:#000;">`;
-    tile.dataset.slot = slot;
+function loadMjpegTiles() {
+  // Load deferred MJPEG streams for <img> elements that were left without src.
+  document.querySelectorAll('img[data-mjpeg-src]').forEach((image) => {
+    if (image.getAttribute('src')) {
+      return;
+    }
+    const src = image.getAttribute('data-mjpeg-src');
+    const fallback = image.getAttribute('data-mjpeg-fallback');
+    const label = image.getAttribute('data-mjpeg-label') || 'NO SIGNAL';
+    if (!src) {
+      return;
+    }
+    let triedFallback = false;
+    image.addEventListener('error', () => {
+      if (image.dataset.rosSrc) {
+        return;
+      }
+      if (fallback && !triedFallback) {
+        triedFallback = true;
+        image.src = fallback;
+        return;
+      }
+      const container = image.parentElement;
+      if (container) {
+        container.innerHTML = `<div class="camera-no-signal">${label}</div>`;
+      }
+    });
+    installMjpegFallback(image, label);
+    image.src = src;
   });
 
-  const thermal = document.querySelector('.thermal-feed');
-  if (thermal) {
-    thermal.innerHTML = `<img src="${apiUrl('/api/v1/cameras/THERMAL/stream.mjpeg')}" alt="THERMAL" style="width:100%;height:100%;object-fit:cover;background:#000;">`;
+  const containers = ['cam-01-feed', 'usb-cam-feed', 'cam-03-feed', 'cam-04-feed'];
+  containers.forEach((containerId) => {
+    const container = document.getElementById(containerId);
+    if (!container) {
+      return;
+    }
+    const placeholder = container.querySelector('[data-mjpeg-src]');
+    if (!placeholder) {
+      return;
+    }
+
+    const tileId = placeholder.getAttribute('data-tile') || 'mjpeg-feed';
+    const src = placeholder.getAttribute('data-mjpeg-src');
+    const fallback = placeholder.getAttribute('data-mjpeg-fallback');
+    const label = placeholder.getAttribute('data-label') || 'NO SIGNAL';
+
+    // Prefer ROS compressed images when they are already available.
+    const hasRosData =
+      (containerId === 'cam-01-feed' && !!latestRosState?.telemetry?.cameraVideo2DataUrl) ||
+      (containerId === 'usb-cam-feed' && !!latestRosState?.telemetry?.cameraWebcamDataUrl);
+    if (hasRosData) {
+      return;
+    }
+
+    container.innerHTML = `<img id="${tileId}" data-mjpeg-src="${src}" src="${src}" alt="${label}" loading="lazy" style="width:100%;height:100%;object-fit:contain;background:#000;display:block;">`;
+    const image = document.getElementById(tileId);
+    let triedFallback = false;
+    if (fallback) {
+      image?.addEventListener('error', () => {
+        if (image.dataset.rosSrc) {
+          return;
+        }
+        if (!triedFallback) {
+          triedFallback = true;
+          image.src = fallback;
+          return;
+        }
+        const parent = image.parentElement;
+        if (parent) {
+          parent.innerHTML = `<div class="camera-no-signal">${label}</div>`;
+        }
+      });
+    }
+    installMjpegFallback(image, label);
+  });
+}
+
+function renderCameraTiles() {
+  const cam01 = document.getElementById('cam-01-feed');
+  const usb = document.getElementById('usb-cam-feed');
+  const cam03 = document.getElementById('cam-03-feed');
+  const cam04 = document.getElementById('cam-04-feed');
+  const armFeedInspect = document.getElementById('arm-feed-inspect');
+  const armFeedInsert = document.getElementById('arm-feed-insert');
+  const armFeedCrate = document.getElementById('arm-feed-crate');
+  const armFeedTouch = document.getElementById('arm-feed-touch');
+
+  if (cam01) {
+    const video2Primary = apiUrl(`/api/v1/cameras/usb/stream.mjpeg?device=${encodeURIComponent(CAMERA_DEVICES.video2)}`);
+    cam01.innerHTML = `<div class="camera-no-signal" data-mjpeg-src="${video2Primary}" data-tile="live-video2-feed" data-label="FRONT CAM / NO SIGNAL">LOADING FRONT CAM...</div>`;
   }
+  if (usb) {
+    const webcamPrimary = apiUrl(`/api/v1/cameras/usb/stream.mjpeg?device=${encodeURIComponent(CAMERA_DEVICES.webcam)}`);
+    const webcamFallback = apiUrl(`/api/v1/cameras/usb/stream.mjpeg?device=${encodeURIComponent(CAMERA_DEVICES.webcamFallback)}`);
+    usb.innerHTML = `<div class="camera-no-signal" data-mjpeg-src="${webcamPrimary}" data-mjpeg-fallback="${webcamFallback}" data-tile="live-webcam-feed" data-label="REAR CAM / NO SIGNAL">LOADING REAR CAM...</div>`;
+  }
+  if (cam03) {
+    cam03.innerHTML = '<canvas id="lidar-canvas-cam03" class="lidar-canvas" aria-label="Lidar map" style="width:100%;height:100%;display:block;background:#050b08;"></canvas>';
+  }
+  if (cam04) {
+    const cam04Src = apiUrl('/api/v1/cameras/CAM_04/stream.mjpeg');
+    cam04.innerHTML = `<div class="camera-no-signal" data-mjpeg-src="${cam04Src}" data-tile="cam04-img" data-label="CAM_04 / NO SIGNAL">LOADING CAM_04...</div>`;
+  }
+
+  const armFeedPrimary = apiUrl(`/api/v1/cameras/usb/stream.mjpeg?device=${encodeURIComponent(CAMERA_DEVICES.video2)}`);
+  const armFeedFallback = apiUrl('/api/v1/cameras/CAM_01/stream.mjpeg');
+  [armFeedInspect, armFeedInsert, armFeedCrate, armFeedTouch].forEach((img) => {
+    if (!img) {
+      return;
+    }
+    img.removeAttribute('src');
+    img.setAttribute('data-mjpeg-src', armFeedPrimary);
+    img.setAttribute('data-mjpeg-fallback', armFeedFallback);
+    img.setAttribute('data-mjpeg-label', 'ARM FEED / NO SIGNAL');
+  });
 
   const main = document.getElementById('main-display');
   if (main) {
-    main.innerHTML = '<img src="' + apiUrl('/api/v1/cameras/CAM_01/stream.mjpeg') + '" alt="CAM_01" style="width:100%;height:100%;object-fit:contain;background:#000;">';
+    const mainSrc = apiUrl('/api/v1/cameras/CAM_01/stream.mjpeg');
+    main.innerHTML = `<div class="camera-no-signal" data-mjpeg-src="${mainSrc}" data-tile="main-display-img" data-label="MAIN VIEW / NO SIGNAL">LOADING MAIN VIEW...</div>`;
   }
 }
 
-function ensureLabViewPanel() {
-  let panel = document.getElementById('labview-panel');
-  if (panel) return panel;
-  panel = document.createElement('div');
-  panel.id = 'labview-panel';
-  panel.style.cssText = 'display:none;position:fixed;inset:40px;background:#111;color:#eee;z-index:2000;padding:16px;overflow:auto;border:2px solid #4caf50;box-shadow:0 0 30px rgba(0,0,0,.6);';
-  panel.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-      <h2 style="margin:0;">Lab_View Engineering Panel</h2>
-      <button id="labview-close" class="retro-btn" style="width:auto;">Close</button>
-    </div>
-    <div style="display:grid;grid-template-columns:1.1fr 1fr;gap:12px;">
-      <section style="background:#1b1b1b;padding:12px;border:1px solid #333;">
-        <h3>Camera Control</h3>
-        <button id="scan-devices" class="retro-btn" style="width:auto;">Detect devices</button>
-        <pre id="labview-camera-metadata" style="white-space:pre-wrap;background:#000;padding:8px;min-height:220px;overflow:auto;">Waiting for metadata...</pre>
-      </section>
-      <section style="background:#1b1b1b;padding:12px;border:1px solid #333;">
-        <h3>ROS2 Graph</h3>
-        <button id="refresh-ros" class="retro-btn" style="width:auto;">Refresh graph</button>
-        <pre id="labview-ros-graph" style="white-space:pre-wrap;background:#000;padding:8px;min-height:220px;overflow:auto;">Waiting for graph...</pre>
-      </section>
-      <section style="background:#1b1b1b;padding:12px;border:1px solid #333;grid-column:1 / -1;">
-        <h3>Engineering Commands</h3>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button id="restart-cam01" class="retro-btn" style="width:auto;">Restart CAM_01</button>
-          <button id="restart-thermal" class="retro-btn" style="width:auto;">Restart THERMAL</button>
-          <button id="node-restart" class="retro-btn" style="width:auto;">Restart node</button>
-          <button id="node-disable" class="retro-btn" style="width:auto;">Disable node</button>
-          <button id="node-enable" class="retro-btn" style="width:auto;">Enable node</button>
-        </div>
-      </section>
-    </div>
-  `;
-  document.body.appendChild(panel);
-
-  panel.querySelector('#labview-close').addEventListener('click', () => (panel.style.display = 'none'));
-  panel.querySelector('#scan-devices').addEventListener('click', async () => {
-    const data = await apiRequest('/api/v1/cameras/discover');
-    panel.querySelector('#labview-camera-metadata').textContent = JSON.stringify(data, null, 2);
-  });
-  panel.querySelector('#refresh-ros').addEventListener('click', async () => {
-    const data = await apiRequest('/api/v1/labview/ros-graph');
-    panel.querySelector('#labview-ros-graph').textContent = JSON.stringify(data, null, 2);
-  });
-  panel.querySelector('#restart-cam01').addEventListener('click', () => apiRequest('/api/v1/cameras/CAM_01/restart', { method: 'POST' }).catch(err => addLog(err.message, 'err')));
-  panel.querySelector('#restart-thermal').addEventListener('click', () => apiRequest('/api/v1/cameras/THERMAL/restart', { method: 'POST' }).catch(err => addLog(err.message, 'err')));
-  panel.querySelector('#node-restart').addEventListener('click', () => apiRequest('/api/v1/labview/node/restart?node=dashboard_bridge', { method: 'POST' }).catch(err => addLog(err.message, 'err')));
-  panel.querySelector('#node-disable').addEventListener('click', () => apiRequest('/api/v1/labview/node/disable?node=dashboard_bridge', { method: 'POST' }).catch(err => addLog(err.message, 'err')));
-  panel.querySelector('#node-enable').addEventListener('click', () => apiRequest('/api/v1/labview/node/enable?node=dashboard_bridge', { method: 'POST' }).catch(err => addLog(err.message, 'err')));
-  return panel;
+async function pollCameraStatus() {
+  try {
+    const payload = await apiRequest('/api/v1/cameras/status');
+    latestCameraStatus = payload;
+    cameraPollErrorReported = false;
+    updateCameraHealthUi(payload);
+  } catch (error) {
+    if (!cameraPollErrorReported) {
+      addLog(`camera status poll failed: ${error.message}`, 'err');
+      cameraPollErrorReported = true;
+    }
+  }
 }
 
-function showLabView() {
-  const panel = ensureLabViewPanel();
-  panel.style.display = 'block';
+async function pollCameraMetadata() {
+  try {
+    const payload = await apiRequest('/api/v1/cameras/metadata');
+    latestCameraMetadata = payload;
+    cameraMetadataPollErrorReported = false;
+    updateCameraRuntimeUi(latestCameraStatus, latestCameraMetadata);
+  } catch (error) {
+    if (!cameraMetadataPollErrorReported) {
+      addLog(`camera metadata poll failed: ${error.message}`, 'err');
+      cameraMetadataPollErrorReported = true;
+    }
+  }
 }
 
-function wireNavigation() {
-  const labviewNav = document.getElementById('labview-nav');
-  if (labviewNav) labviewNav.addEventListener('click', showLabView);
-  const hardwareNav = document.getElementById('hardware-nav');
-  if (hardwareNav) hardwareNav.addEventListener('click', () => addLog('Hardware panel opened', 'info'));
+function _visionTileFromPrimary(primary) {
+  if (primary === 'webcam') {
+    return 'CAM_02';
+  }
+  return 'CAM_01';
+}
+
+function _visionTilesToTry(primary) {
+  const preferred = _visionTileFromPrimary(primary);
+  return [preferred, 'CAM_01', 'CAM_02', 'CAM_03', 'CAM_04'].filter((tile, index, tiles) => tiles.indexOf(tile) === index);
+}
+
+function setCameraTabPreviewTile(tile) {
+  const preview = document.getElementById('camera-tab-preview');
+  if (!preview || !tile) {
+    return;
+  }
+
+  const telemetry = latestRosState?.telemetry;
+  const rosDataUrl =
+    tile === 'CAM_02'
+      ? telemetry?.cameraWebcamDataUrl
+      : tile === 'CAM_01'
+        ? telemetry?.cameraVideo2DataUrl || telemetry?.cameraDataUrl
+        : '';
+  if (rosDataUrl) {
+    if (preview.dataset.rosSrc !== rosDataUrl) {
+      preview.dataset.rosSrc = rosDataUrl;
+      preview.src = rosDataUrl;
+    }
+    return;
+  }
+
+  const nextSrc = apiUrl(`/api/v1/cameras/${tile}/stream.mjpeg`);
+  if (preview.getAttribute('src') !== nextSrc) {
+    preview.dataset.rosSrc = '';
+    preview.src = nextSrc;
+  }
+}
+
+async function pollVisionDetections() {
+  try {
+    const tiles = _visionTilesToTry(latestCameraStatus?.primary_source);
+    let payload = null;
+    let selectedTile = latestVisionTile || tiles[0];
+
+    for (const tile of tiles) {
+      const response = await apiRequest(`/api/v1/cameras/${tile}/detections`);
+      if (!payload) {
+        payload = response;
+        selectedTile = tile;
+      }
+      if (response?.detected) {
+        payload = response;
+        selectedTile = tile;
+        break;
+      }
+    }
+
+    latestVisionDetection = payload;
+    latestVisionTile = selectedTile;
+    visionDetectionPollErrorReported = false;
+    setCameraTabPreviewTile(selectedTile);
+    updateVisionOverlay();
+    if (latestRosState) {
+      updateRightTabRuntimeFields(latestRosState);
+    }
+  } catch (error) {
+    if (!visionDetectionPollErrorReported) {
+      addLog(`vision detection poll failed: ${error.message}`, 'err');
+      visionDetectionPollErrorReported = true;
+    }
+  }
 }
 
 function wireMissionButtons() {
@@ -471,33 +1297,106 @@ function wireMissionButtons() {
   document.getElementById('estop-btn')?.addEventListener('click', estopMission);
 }
 
-function initializeDashboard() {
-  setupWebSockets();
-  renderCameraTiles();
-  wireNavigation();
-  wireMissionButtons();
+function initRosLayer() {
+  const config = window.RosDashboardConfig;
+  if (!config || !window.RosBridgeConnection || !window.createDashboardStore) {
+    addLog('ROS modules missing in frontend bundle', 'err');
+    setRosStatus('offline', 'modules');
+    return;
+  }
+
+  const connection = new window.RosBridgeConnection({
+    url: config.rosbridgeUrl,
+    urls: config.rosbridgeUrls,
+    reconnectBaseMs: config.reconnectBaseMs,
+    reconnectMaxMs: config.reconnectMaxMs,
+  });
+
+  rosStore = window.createDashboardStore(connection, config);
+  rosUnsubscribe = rosStore.subscribe(applyRosState);
+  rosStore.init();
+
   wireDpad();
   wireBehaviorButtons();
-  ensureLabViewPanel();
+  wireKeyboardControls();
+}
+
+function cleanupResources() {
+  if (clockInterval) {
+    clearInterval(clockInterval);
+    clockInterval = null;
+  }
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+  }
+  if (cameraStatusInterval) {
+    clearInterval(cameraStatusInterval);
+    cameraStatusInterval = null;
+  }
+  if (cameraMetadataInterval) {
+    clearInterval(cameraMetadataInterval);
+    cameraMetadataInterval = null;
+  }
+  if (visionDetectionInterval) {
+    clearInterval(visionDetectionInterval);
+    visionDetectionInterval = null;
+  }
+  if (timerInterval) {
+    clearInterval(timerInterval);
+    timerInterval = null;
+  }
+  window.removeEventListener("keydown", handleKeyboardMovement);
+  window.removeEventListener("keyup", handleKeyboardMovement);
+  window.removeEventListener("keydown", handleFlipperKeys);
+  window.removeEventListener("blur", stopKeyboardMovement);
+  if (rosUnsubscribe) {
+    rosUnsubscribe();
+    rosUnsubscribe = null;
+  }
+  if (rosStore) {
+    rosStore.cleanup();
+    rosStore = null;
+  }
+}
+
+function initializeDashboard() {
+  renderCameraTiles();
+  setTimeout(loadMjpegTiles, 1500);
+  wireMissionButtons();
+  initRosLayer();
+  pollCameraStatus();
+  pollCameraMetadata();
+  pollVisionDetections();
+  cameraStatusInterval = setInterval(pollCameraStatus, 1000);
+  cameraMetadataInterval = setInterval(pollCameraMetadata, 1000);
+  visionDetectionInterval = setInterval(pollVisionDetections, 400);
 
   const timestamp = document.getElementById('log-timestamp');
-  setInterval(() => {
-    if (timestamp) timestamp.innerText = new Date().toLocaleTimeString('en-GB', { hour12: false });
+  clockInterval = setInterval(() => {
+    if (timestamp) {
+      timestamp.innerText = new Date().toLocaleTimeString('en-GB', { hour12: false });
+    }
   }, 1000);
 
-  setInterval(() => addLog('HEARTBEAT: ALL SYSTEMS NOMINAL'), 5000);
+  heartbeatInterval = setInterval(() => addLog('HEARTBEAT: UI LOOP ACTIVE'), 5000);
+  addLog('Dashboard initialized', 'info');
 
-  apiRequest('/api/v1/diagnostics')
-    .then(data => addLog(`Diagnostics online: ${Object.keys(data).join(', ')}`, 'info'))
-    .catch(err => addLog(err.message, 'err'));
-
-  pollRosStatus();
-  if (rosStatusInterval) clearInterval(rosStatusInterval);
-  rosStatusInterval = setInterval(pollRosStatus, 5000);
-
-  pollCameraStatus();
-  if (cameraStatusInterval) clearInterval(cameraStatusInterval);
-  cameraStatusInterval = setInterval(pollCameraStatus, 5000);
+  window.addEventListener('resize', () => {
+    if (latestRosState) {
+      renderLidar(latestRosState.telemetry.lidar, latestRosState.ui.stale.lidar);
+    }
+  });
+  window.addEventListener('beforeunload', cleanupResources, { once: true });
 }
 
 document.addEventListener('DOMContentLoaded', initializeDashboard);
+
+window.toggleDashboard = toggleDashboard;
+window.focusCam = focusCam;
+window.switchTab = switchTab;
+window.switchSysTab = switchSysTab;
+window.toggleInspectMode = toggleInspectMode;
+window.simulateDrill = simulateDrill;
+window.startMission = startMission;
+window.resetMission = resetMission;

@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aegis Dashboard</title>
     <link rel="stylesheet" href="style.css">
+    <script src="ros-config.js" defer></script>
+    <script src="ros-connection.js" defer></script>
+    <script src="ros-store.js" defer></script>
     <script src="script.js" defer></script>
 </head>
 <body>
@@ -23,13 +26,15 @@
         </div>
     </nav>
 
+    <div id="emergency-banner" class="emergency-banner hidden">EMERGENCY STOP ACTIVE</div>
+
     <div class="hero-container">
         <div class="left-hero">
             <div id="top-area" class="left-hero-top">
-                <div class="window cam-window"><div class="title-bar"></div><div class="content-area cam-content">CAM_01</div></div>
-                <div class="window cam-window"><div class="title-bar"></div><div class="content-area cam-content">CAM_02</div></div>
-                <div class="window cam-window"><div class="title-bar"></div><div class="content-area cam-content">CAM_03</div></div>
-                <div class="window cam-window"><div class="title-bar"></div><div class="content-area cam-content">CAM_04</div></div>
+                <div class="window cam-window"><div class="title-bar"></div><div class="content-area cam-content" id="cam-01-feed"></div></div>
+                <div class="window cam-window"><div class="title-bar"></div><div class="content-area cam-content" id="usb-cam-feed"></div></div>
+                <div class="window cam-window"><div class="title-bar"></div><div class="content-area cam-content" id="cam-03-feed"></div></div>
+                <div class="window cam-window"><div class="title-bar"></div><div class="content-area cam-content" id="cam-04-feed"></div></div>
             </div>
             
             <div class="left-hero-bottom">
@@ -88,14 +93,16 @@
                     <div>ID: <span class="mission-id">RC-2026-RESCUE</span></div>
                     <div>PRIORITY: <span class="priority-high">HIGH</span></div>
                     <div>AREA: ZONE-B CRATE SECTOR</div>
-                    <div>NOTES: OBSERVE THERMAL</div>
+                    <div>BEHAVIOR: <span id="active-behavior">IDLE</span></div>
                 </div>
 
-                <div class="tab-strip">
+                <div class="tab-strip tab-strip-sys">
                     <div class="tab sys-tab active" onclick="switchSysTab(event, 'sys-home')">Home</div>
                     <div class="tab sys-tab" onclick="switchSysTab(event, 'sys-inspect')">Inspect</div>
                     <div class="tab sys-tab" onclick="switchSysTab(event, 'sys-insert')">Insert</div>
                     <div class="tab sys-tab" onclick="switchSysTab(event, 'sys-crate')">Crate</div>
+                    <div class="tab sys-tab" onclick="switchSysTab(event, 'sys-touch')">Touch</div>
+                    <div class="tab sys-tab" onclick="switchSysTab(event, 'sys-lidar')">Lidar</div>
                 </div>
 
                 <div class="sys-content-scroll">
@@ -135,6 +142,7 @@
                             </div>
                         </div>    
 
+
                     </div>
 
                     <div id="sys-inspect" class="sys-pane">
@@ -143,22 +151,33 @@
                             <button class="retro-btn half-width-btn" id="btn-omni" onclick="toggleInspectMode('omni')">Omni Inspect</button>
                         </div>
                         <div id="inspect-fields">
-                            <div class="data-row"><span>HAZMAT:</span> <span class="text-red">DETECTED (FLAM)</span></div>
-                            <div class="data-row"><span>PRESSURE:</span> <span>101.4 kPa</span></div>
-                            <div class="data-row"><span>ACUITY:</span> <span>VISUAL_OK</span></div>
-                            <div class="data-row"><span>QR_CODE:</span> <span>RC_4920_A</span></div>
+                            <div class="data-row"><span>HAZMAT:</span> <span id="inspect-hazmat">--</span></div>
+                            <div class="data-row"><span>PRESSURE:</span> <span id="inspect-pressure">--</span></div>
+                            <div class="data-row"><span>ACUITY:</span> <span id="inspect-acuity">--</span></div>
+                            <div class="data-row"><span>QR_CODE:</span> <span id="inspect-qr">--</span></div>
+                            <div class="data-row"><span>BATTERY:</span> <span id="diag-battery">--</span></div>
+                            <div class="data-row"><span>CPU:</span> <span id="diag-cpu">--</span></div>
+                            <div class="data-row"><span>MEMORY:</span> <span id="diag-memory">--</span></div>
                         </div>
-                            <div class="arm-feed-tall">
-                                    ARM_FEED(Zoomed)
-                            </div>
+                                <div class="arm-feed-tall" style="position: relative; overflow: hidden;">
+                                    <img id="arm-feed-inspect" alt="ARM_FEED /dev/video2" style="width:100%;height:100%;object-fit:cover;background:#000;" />
+                                    <div id="vision-overlay-inspect" class="vision-overlay-box hidden">
+                                        <div class="vision-overlay-label"></div>
+                                    </div>
+                                </div>
                     </div>
 
                     <div id="sys-insert" class="sys-pane">
                         <button class="retro-btn full-width-btn insert-btn">LINEAR INSERT</button>
                         <button class="retro-btn full-width-btn drill-btn-default" id="drill-btn" onclick="simulateDrill()">ROLL THE ARM (DRILL)</button>
                         <div id="drill-status" class="drill-status-text">READY</div>
-                        <div class="arm-feed-tall">
-                                    ARM_FEED(Zoomed)
+                        <div class="data-row"><span>TARGET_LOCK:</span> <span id="insert-target-lock">--</span></div>
+                        <div class="data-row"><span>BOX:</span> <span id="insert-box">--</span></div>
+                        <div class="arm-feed-tall" style="position: relative; overflow: hidden;">
+                                    <img id="arm-feed-insert" alt="ARM_FEED /dev/video2" style="width:100%;height:100%;object-fit:cover;background:#000;" />
+                                    <div id="vision-overlay-insert" class="vision-overlay-box hidden">
+                                        <div class="vision-overlay-label"></div>
+                                    </div>
                         </div>
                     </div>
 
@@ -167,25 +186,49 @@
                     <div class="crate-feed-grid">
 
                         <div class="feed-square thermal-feed">
-
-                            THERMAL_FEED
-
+                            <img id="camera-preview" alt="ROS Camera Preview" style="width:100%;height:100%;object-fit:cover;background:#000;" />
+                            <div id="vision-overlay-box" class="vision-overlay-box hidden">
+                                <div id="vision-overlay-label" class="vision-overlay-label"></div>
+                            </div>
                         </div>
 
                         <div class="feed-square arm-feed-square">
-                        ARM_FEED (Zoomed)</div>
+                        <img id="arm-feed-crate" alt="ARM_FEED /dev/video2" style="width:100%;height:100%;object-fit:cover;background:#000;" /></div>
                     </div>
 
-                    <div class="data-row motion-row">MOTION: <span class="text-green">DETECTED</span></div>
+                    <div class="data-row motion-row">MOTION: <span id="crate-motion">--</span></div>
                     <div class="proximity-panel">
                             <div class="proximity-title">PROXIMITY SAMPLING</div>
                             <div class="proximity-bar">
                                 <div class="proximity-marker"></div>
                             </div> 
                         </div>
-                            <div class="data-row"><span>HAZMAT:</span> <span class="text-red">DETECTED (FLAM)</span></div>
-                            <div class="data-row"><span>ACUITY:</span> <span>VISUAL_OK</span></div>
-                            <div class="data-row"><span>QR_CODE:</span> <span>RC_4920_A</span></div>    
+                            <div class="data-row"><span>HAZMAT:</span> <span id="crate-hazmat">--</span></div>
+                            <div class="data-row"><span>ACUITY:</span> <span id="crate-acuity">--</span></div>
+                            <div class="data-row"><span>QR_CODE:</span> <span id="crate-qr">--</span></div>
+                </div>
+
+                <div id="sys-touch" class="sys-pane">
+                        <div class="arm-feed-tall" style="position: relative; overflow: hidden;">
+                                    <img id="arm-feed-touch" alt="ARM_FEED /dev/video2" style="width:100%;height:100%;object-fit:cover;background:#000;" />
+                                    <div id="vision-overlay-touch" class="vision-overlay-box hidden">
+                                        <div class="vision-overlay-label"></div>
+                                    </div>
+                        </div>
+                        <div class="data-row"><span>CONTACT:</span> <span id="touch-contact">NO</span></div>
+                        <div class="data-row"><span>PRESSURE:</span> <span id="touch-pressure">--</span></div>
+                </div>
+
+                <div id="sys-lidar" class="sys-pane">
+                    <div class="lidar-panel">
+                        <canvas id="lidar-canvas" aria-label="Live lidar polar plot"></canvas>
+                        <div id="lidar-status" class="lidar-status">WAITING FOR /scan</div>
+                    </div>
+                    <div class="data-row"><span>POINTS:</span> <span id="lidar-point-count">--</span></div>
+                    <div class="data-row"><span>NEAREST FWD:</span> <span id="lidar-nearest">--</span></div>
+                    <div class="data-row"><span>SCAN RATE:</span> <span id="lidar-rate">--</span></div>
+                    <div class="data-row"><span>FRAME:</span> <span id="lidar-frame">--</span></div>
+                    <div class="lidar-legend">RANGE <span>0 m</span><span>6 m</span><span>12 m</span></div>
                 </div>
 
                  </div>
@@ -196,32 +239,64 @@
                             <span>SYS_LOG_STREAM_01</span>
                             <span id="log-timestamp">00:00:00</span>
                         </div>
-                        <!-- <div id="persistent-logs">
+                        <div id="persistent-logs">
                             <div>[SYSTEM] INITIALIZING LOG_STREAM...</div>
                             <div>[HARDWARE] ARM_CONTROLLER: READY</div>
                             <div>[SENSOR] LIDAR_SCAN: ACTIVE</div>
                             <div>[NETWORK] LINK_ESTABLISHED: 42ms</div>
-                        </div> -->
+                        </div>
                     </div>
                 </div>
             </div>
 
             <div class="window">
                 <div class="behavior-panel">
-                    <div class="tab-strip">
+                    <div class="tab-strip tab-strip-behavior">
                         <div class="tab" onclick="switchTab(0)">Mission</div>
                         <div class="tab active" onclick="switchTab(1)">Behaviors</div>
                         <div class="tab" onclick="switchTab(2)">Settings</div>
+                        <div class="tab" onclick="switchTab(3)">Cameras</div>
                     </div>
                     <div class="tab-body" id="t0"><div class="retro-btn">SLAM</div></div>
                     <div class="tab-body active" id="t1">
-                        <div class="retro-btn">Move to waypoint</div>
-                        <div class="retro-btn">Explore</div>
-                        <div class="retro-btn">Arm</div>
+                        <div class="retro-btn behavior-btn" data-behavior-id="1">Move Forward</div>
+                        <div class="retro-btn behavior-btn" data-behavior-id="2">Move Backward</div>
+                        <div class="retro-btn behavior-btn" data-behavior-id="3">Rotate Left</div>
+                        <div class="retro-btn behavior-btn" data-behavior-id="4">Rotate Right</div>
+                        <div class="retro-btn behavior-btn" data-behavior-id="5">Rotate 180</div>
                     </div>
                     <div class="tab-body" id="t2">
                         <div class="retro-btn">Recalibrate</div>
                         <div class="retro-btn">Admin System</div>
+                    </div>
+                    <div class="tab-body" id="t3">
+                        <div class="camera-status-header" id="camera-primary-source">PRIMARY: NONE</div>
+                        <div class="camera-runtime-grid">
+                            <div class="camera-runtime-row">BRIDGE: <span id="camera-bridge-connected">--</span></div>
+                            <div class="camera-runtime-row">STALE: <span id="camera-status-age">--</span></div>
+                            <div class="camera-runtime-row">THERMAL DEVICE: <span id="thermal-device">--</span></div>
+                        </div>
+                        <div id="camera-preview-shell" class="camera-preview-shell" style="position: relative; overflow: hidden; margin: 10px 0; border: 2px solid #000; background: #000; aspect-ratio: 32 / 14;">
+                            <div id="camera-tab-detection-status" class="camera-tab-detection-status">MEDIAPIPE: SEARCHING</div>
+                            <img id="camera-tab-preview" alt="Camera Tab Preview" style="width:100%;height:100%;object-fit:contain;background:#000;display:block;" />
+                            <div id="camera-tab-vision-overlay" class="vision-overlay-box hidden">
+                                <div class="vision-overlay-label"></div>
+                            </div>
+                        </div>
+                        <div class="camera-tab-grid">
+                            <div class="camera-card">
+                                <div class="camera-card-title">VIDEO2</div>
+                                <div class="camera-card-meta">DEVICE: <span id="video2-device">--</span></div>
+                                <div class="camera-card-meta">RECONNECTS: <span id="video2-reconnects">--</span></div>
+                                <div class="camera-health-pill health-bad" id="video2-health">OFFLINE</div>
+                            </div>
+                            <div class="camera-card">
+                                <div class="camera-card-title">WEBCAM</div>
+                                <div class="camera-card-meta">DEVICE: <span id="webcam-device">--</span></div>
+                                <div class="camera-card-meta">RECONNECTS: <span id="webcam-reconnects">--</span></div>
+                                <div class="camera-health-pill health-bad" id="webcam-health">OFFLINE</div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
