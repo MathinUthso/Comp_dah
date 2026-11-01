@@ -1,0 +1,16 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "robot_backend_ws/src/aegis_sim", "robot_backend_ws/src/aegis_robot_bridge"]
+# ROS Humble installs pytest plugins globally; they are unrelated to these tests.
+addopts = "-p no:launch_testing -p no:launch_ros"
+
+[tool.ruff]
+line-length = 140
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["backend"]
