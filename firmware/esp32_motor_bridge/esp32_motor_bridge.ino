@@ -595,6 +595,10 @@ void loop() {
                       motors[i].position_reached ? "ok" : "...");
       }
     }
+  } else {
+    // Pad disconnected: never reuse the last stick values after host idle.
+    X = 0;
+    Y = 0;
   }
 
   // Control loop

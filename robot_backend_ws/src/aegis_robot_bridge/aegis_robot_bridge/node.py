@@ -9,7 +9,9 @@ Contract (identical to the Gazebo adapter, so the dashboard needs no changes):
 Safety: the last ``/cmd_vel`` is held for ``command_hold_s`` and then zeroed, so
 a dropped Wi-Fi link or a closed browser tab stops the robot. Commands are also
 zeroed when telemetry goes stale, and the firmware zeroes the motors on its own
-if the serial stream stops.
+if the serial stream stops. Once the dashboard goes idle the bridge stops
+transmitting, which lets the firmware hand control back to the PS4 pad after
+its own 2 s host-idle window.
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ from aegis_robot_bridge.protocol import (
     format_estop,
     format_reset,
     format_stop,
-    format_velocity,
+    next_drive_command,
     parse_line,
     rpm_to_mps,
     twist_to_wheel_rpm,
@@ -79,6 +81,7 @@ class RobotBridge(Node):
         self._cmd_left_rpm = 0.0
         self._cmd_right_rpm = 0.0
         self._last_cmd_monotonic = 0.0
+        self._streaming = False
         self._last_telemetry: Telemetry | None = None
         self._last_telemetry_monotonic = 0.0
         self._ack_event = False
@@ -125,16 +128,18 @@ class RobotBridge(Node):
         self._process_serial_lines()
         now = time.monotonic()
 
-        if self._estop_latched:
-            left = right = 0.0
-        elif not self._link_is_healthy() or (now - self._last_cmd_monotonic) > self.command_hold_s:
-            # Stale link or stale /cmd_vel: hold zero rather than the last command.
-            left = right = 0.0
-        else:
-            left, right = self._cmd_left_rpm, self._cmd_right_rpm
-
-        if self.link.connected:
-            self.link.send(format_velocity(left, right, self.max_wheel_rpm))
+        line, self._streaming = next_drive_command(
+            estop_latched=self._estop_latched,
+            link_healthy=self._link_is_healthy(),
+            command_age_s=now - self._last_cmd_monotonic,
+            command_hold_s=self.command_hold_s,
+            left_rpm=self._cmd_left_rpm,
+            right_rpm=self._cmd_right_rpm,
+            max_rpm=self.max_wheel_rpm,
+            streaming=self._streaming,
+        )
+        if line is not None and self.link.connected:
+            self.link.send(line)
 
     # ------------------------------------------------------------------
     # Serial telemetry
@@ -212,6 +217,7 @@ class RobotBridge(Node):
 
         acked, detail = self._send_and_wait(format_estop())
         self.link.send(format_stop())
+        self._streaming = False
         self._publish_emergency_status()
         response.success = acked
         response.message = (
@@ -228,6 +234,7 @@ class RobotBridge(Node):
         if acked:
             self._estop_latched = False
             self._last_cmd_monotonic = 0.0
+            self._streaming = False
         self._publish_emergency_status()
         response.success = acked
         response.message = (
@@ -295,6 +302,9 @@ class RobotBridge(Node):
         self._publish_emergency_status()
 
     def destroy_node(self) -> bool:
+        if self.link.connected:
+            self.link.send(format_stop())
+            time.sleep(0.05)
         self.link.stop()
         return super().destroy_node()
 

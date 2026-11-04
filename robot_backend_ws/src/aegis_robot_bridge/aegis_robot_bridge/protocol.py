@@ -84,6 +84,33 @@ def format_ping() -> str:
     return "PING"
 
 
+def next_drive_command(
+    *,
+    estop_latched: bool,
+    link_healthy: bool,
+    command_age_s: float,
+    command_hold_s: float,
+    left_rpm: float,
+    right_rpm: float,
+    max_rpm: float = MAX_WHEEL_RPM,
+    streaming: bool,
+) -> tuple[str | None, bool]:
+    """Return ``(serial_line, streaming)`` for one command tick.
+
+    The ESP32 treats every host line as a sign of life: it ignores the PS4 pad
+    while host control is active and only hands control back after 2 s without
+    a command. Streaming ``VEL,0,0`` while the dashboard is idle would keep the
+    pad locked out forever, so only stream while a fresh ``/cmd_vel`` exists and
+    send a single ``STOP`` when that stream ends.
+    """
+    active = link_healthy and not estop_latched and command_age_s <= command_hold_s
+    if active:
+        return format_velocity(left_rpm, right_rpm, max_rpm), True
+    if streaming:
+        return format_stop(), False
+    return None, False
+
+
 def parse_line(line: str) -> Telemetry | Ack | None:
     """Parse one serial line. Returns ``None`` for logs, blank lines, or garbage."""
     text = line.strip()

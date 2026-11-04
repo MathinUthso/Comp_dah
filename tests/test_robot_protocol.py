@@ -10,6 +10,7 @@ from aegis_robot_bridge.protocol import (
     format_estop,
     format_reset,
     format_velocity,
+    next_drive_command,
     parse_line,
     rpm_to_mps,
     twist_to_wheel_rpm,
@@ -33,6 +34,47 @@ def test_command_lines_are_stable() -> None:
     assert format_reset() == "RESET"
     assert parse_line("") is None
     assert parse_line("# Move cmd: dx=0.020 m") is None
+
+
+def _drive(**overrides):
+    values = {
+        "estop_latched": False,
+        "link_healthy": True,
+        "command_age_s": 0.1,
+        "command_hold_s": 0.35,
+        "left_rpm": 100.0,
+        "right_rpm": -100.0,
+        "streaming": False,
+    }
+    values.update(overrides)
+    return next_drive_command(**values)
+
+
+def test_drive_command_streams_only_while_cmd_vel_is_fresh() -> None:
+    line, streaming = _drive()
+    assert line == "VEL,100,-100"
+    assert streaming is True
+
+
+def test_drive_command_sends_one_stop_when_stream_ends() -> None:
+    line, streaming = _drive(command_age_s=0.5, streaming=True)
+    assert line == "STOP"
+    assert streaming is False
+
+    line, streaming = _drive(command_age_s=0.5, streaming=False)
+    assert line is None
+    assert streaming is False
+
+
+def test_drive_command_stops_for_estop_or_unhealthy_link() -> None:
+    for overrides in ({"estop_latched": True}, {"link_healthy": False}):
+        line, streaming = _drive(streaming=True, **overrides)
+        assert line == "STOP"
+        assert streaming is False
+
+        line, streaming = _drive(streaming=False, **overrides)
+        assert line is None
+        assert streaming is False
 
 
 def test_parse_telemetry() -> None:
