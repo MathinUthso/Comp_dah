@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Quick post-start check for the dashboard, ROS graph and Pi drive topics.
-set -euo pipefail
+set -eo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
