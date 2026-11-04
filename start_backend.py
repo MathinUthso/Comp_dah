@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -53,6 +54,26 @@ def _default_backend_cmd() -> str:
 
 BACKEND_CMD = os.environ.get("BACKEND_CMD", _default_backend_cmd())
 ROSBRIDGE_CMD = os.environ.get("ROSBRIDGE_CMD", "ros2 launch rosbridge_server rosbridge_websocket_launch.xml")
+# Optional Pi-side nodes. scripts/start_pi_stack.sh sets these; leave them empty
+# for the simulation or backend-only development.
+ROBOT_BRIDGE_CMD = os.environ.get("ROBOT_BRIDGE_CMD", "").strip()
+CAMERA_BRIDGE_CMD = os.environ.get("CAMERA_BRIDGE_CMD", "").strip()
+
+
+def lan_urls(port: str) -> list[str]:
+    """Return dashboard URLs for this machine's non-loopback IPv4 addresses."""
+    addresses: set[str] = set()
+    try:
+        addresses.update(socket.gethostbyname_ex(socket.gethostname())[2])
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            addresses.add(str(info[4][0]))
+    except OSError:
+        pass
+    usable = sorted(address for address in addresses if not address.startswith("127."))
+    return [f"http://{address}:{port}/" for address in usable]
 
 
 def launch(command: str) -> subprocess.Popen:
@@ -70,10 +91,19 @@ def main() -> int:
         processes.append(launch(ROSBRIDGE_CMD))
         time.sleep(1.5)
 
+        if CAMERA_BRIDGE_CMD:
+            print("[launcher] starting camera bridge")
+            processes.append(launch(CAMERA_BRIDGE_CMD))
+        if ROBOT_BRIDGE_CMD:
+            print("[launcher] starting robot bridge")
+            processes.append(launch(ROBOT_BRIDGE_CMD))
+
         print("[launcher] starting backend")
         processes.append(launch(BACKEND_CMD))
 
-        print("[launcher] dashboard online at http://127.0.0.1:8000/")
+        print(f"[launcher] dashboard online at http://127.0.0.1:{BACKEND_PORT}/")
+        for url in lan_urls(BACKEND_PORT):
+            print(f"[launcher] dashboard on LAN at {url}")
         print("[launcher] press Ctrl+C to stop")
 
         while True:
