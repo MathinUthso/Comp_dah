@@ -92,6 +92,8 @@ def main() -> int:
         time.sleep(1.5)
 
         if CAMERA_BRIDGE_CMD:
+            # The ROS camera node owns /dev/video*; don't let the backend race it.
+            os.environ.setdefault("RESCUE_ENABLE_CAMERA_CAPTURE", "false")
             print("[launcher] starting camera bridge")
             processes.append(launch(CAMERA_BRIDGE_CMD))
         if ROBOT_BRIDGE_CMD:
