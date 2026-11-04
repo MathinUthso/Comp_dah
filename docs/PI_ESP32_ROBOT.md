@@ -8,7 +8,7 @@ M3508 motors over CAN.
 Browser (dashboard, /cmd_vel + E-STOP)
         │  rosbridge ws://<pi>:9090        FastAPI :8000 (cameras, REST, config)
         ▼
-Raspberry Pi: aegis_robot_bridge (ROS 2 Humble) ── USB serial 115200 ──▶ ESP32
+Raspberry Pi: aegis_robot_bridge (ROS 2 Jazzy) ── USB serial 115200 ──▶ ESP32
                                                                          │  MCP2515 / CAN 1 Mbit
                                                                          ▼
                                                            4 × M3508 + C620 ESCs
@@ -19,14 +19,15 @@ the dashboard needs no robot-specific code:
 
 | Interface | Direction | Purpose |
 | --- | --- | --- |
-| `/cmd_vel` (`geometry_msgs/Twist`) | subscribe | body velocity from the dashboard (d-pad, arrow keys) |
+| `/cmd_vel` (`geometry_msgs/Twist`) | subscribe | body velocity from the dashboard (d-pad, WASD/arrow keys, Shift boost) |
 | `/emergency/estop`, `/emergency/reset` (`std_srvs/Trigger`) | serve | E-STOP button and RESET button |
 | `/emergency/status` (`std_msgs/Bool`) | publish | latched E-stop state |
 | `/hardware/odometry` (`nav_msgs/Odometry`) | publish | dead-reckoned pose from the motor encoders |
 | `/diagnostics` (`diagnostic_msgs/DiagnosticArray`) | publish | serial link, motor RPM, commanded RPM |
 
 `/proximity/range`, `/thermal/temperature`, `/scan`, `/camera/*` are not produced by this
-bridge. Keep using `camera_bridge` (or the backend's `/dev/video*` path) for video; lidar,
+bridge. `camera_bridge` publishes the camera topics; the Pi startup script sets
+`RESCUE_ENABLE_CAMERA_CAPTURE=false` so the backend does not open the same devices. Lidar,
 range and thermal come from whatever sensors you add.
 
 ## 1. Firmware
@@ -55,10 +56,10 @@ Newline-delimited ASCII at 115200 baud. The Pi side lives in
 | Pi → ESP32 | Meaning |
 | --- | --- |
 | `VEL,<left_rpm>,<right_rpm>` | side wheel RPM, positive = forward; implies velocity mode; unacknowledged (20 Hz) |
-| `STOP` | zero RPM, keep host control |
+| `STOP` | zero RPM and keep host control for the firmware's 2 s idle window |
 | `ESTOP` | latch E-stop and cut drive output |
 | `RESET` | clear the latch and hold zero |
-| `PING` | keep-alive, replies `OK,pong` |
+| `PING` | keep-alive, replies `OK,pong` (the bridge uses telemetry, not PING, for health) |
 
 | ESP32 → Pi | Meaning |
 | --- | --- |
@@ -103,15 +104,36 @@ ESP32 adapters (CP210x, CH340/CH910, native USB-CDC) and falls back to `/dev/tty
 
 ## 3. Run
 
-Terminal 1 — dashboard backend, rosbridge and frontend (unchanged):
+On the Pi, one command starts rosbridge, `camera_bridge`, `aegis_robot_bridge` and the
+FastAPI dashboard together:
 
 ```bash
-python3 start_backend.py
+./scripts/start_pi_stack.sh
 ```
 
-Terminal 2 — drive bridge:
+The script lets the drive bridge auto-detect the ESP32. Pin the device or skip a node with:
 
 ```bash
+AEGIS_PORT=/dev/aegis-esp32 ./scripts/start_pi_stack.sh
+SKIP_CAMERA=1 ./scripts/start_pi_stack.sh
+SKIP_ROBOT=1 ./scripts/start_pi_stack.sh
+```
+
+It also sets `RESCUE_ENABLE_CAMERA_CAPTURE=false`, so `camera_bridge` is the only owner of
+`/dev/video*`. The backend still serves REST, WebSockets and the frontend.
+
+Equivalent manual terminals:
+
+```bash
+# Terminal 1: rosbridge + backend + frontend
+python3 start_backend.py
+
+# Terminal 2: camera bridge
+source /opt/ros/jazzy/setup.bash
+source robot_backend_ws/install/setup.bash
+ros2 launch camera_bridge camera_bridge.launch.py
+
+# Terminal 3: drive bridge
 source /opt/ros/jazzy/setup.bash
 source robot_backend_ws/install/setup.bash
 ros2 launch aegis_robot_bridge robot.launch.py port:=/dev/aegis-esp32
@@ -121,20 +143,50 @@ Omit `port:=` to auto-detect. Useful overrides: `baud`, `wheel_radius`, `track_w
 `ticks_per_wheel_rev`, `max_wheel_rpm`, `command_rate_hz`, `command_hold_s`,
 `telemetry_timeout_s`.
 
-Then open `http://<pi>:8000/`: the d-pad, arrow keys and the E-STOP button drive the robot.
+Then open `http://<pi>:8000/` from the laptop. The launcher prints the LAN URLs; the frontend
+builds `ws://<pi>:9090` from `window.location`, so no ROS cross-machine setup is needed.
+
+### Keyboard drive map
+
+| Key | Action |
+| --- | --- |
+| `↑` / `W` | forward |
+| `↓` / `S` | reverse |
+| `←` / `A` | turn left |
+| `→` / `D` | turn right |
+| `Shift` + drive key | 1.5× speed boost |
+| `Esc` | software stop (publishes zero `/cmd_vel`) |
+| `Q` / `E` | front-left / front-right flipper up (Ctrl = down, Shift = pair) |
+| `Z` / `C` | rear-left / rear-right flipper up (Ctrl = down, Shift = pair) |
+| `T` | dog stance (all flippers down); `Shift+T` returns to neutral |
+
+The dashboard streams `/cmd_vel` at 10 Hz while a key or d-pad button is held. Speeds,
+boost, stream rate and flipper step are in `frontend/ros-config.js` under `teleop`.
 
 ## 4. Safety behaviour
 
 | Situation | Robot behaviour |
 | --- | --- |
-| `/cmd_vel` stops arriving (tab closed, Wi-Fi drop) for `command_hold_s` (0.35 s) | bridge streams `VEL,0,0`; wheels stop |
-| Bridge sees no telemetry for `telemetry_timeout_s` (1 s) | bridge streams zero and reports an ERROR diagnostic; firmware also zeroes after 400 ms of silence |
+| `/cmd_vel` stops arriving (tab closed, Wi-Fi drop) for `command_hold_s` (0.35 s) | bridge sends one `STOP` and stops transmitting; wheels stop immediately |
+| Dashboard idle (no key held) for about 2 s | firmware hands control back to the PS4 pad; the next dashboard key press takes over immediately |
+| Bridge sees no telemetry for `telemetry_timeout_s` (1 s) | bridge sends one `STOP`, reports an ERROR diagnostic, and stops streaming |
 | Serial cable unplugged / Pi reboot | firmware zeroes the wheels; after 2 s the PS4 pad can drive again |
 | E-STOP pressed | firmware latches, drive output cut; `/emergency/status` = true; cleared only by RESET (dashboard RESET button) or a power cycle |
 | ESP32 does not answer `ESTOP` | the bridge still latches locally, the service returns `success: false` with the reason, and the backend shows the failure |
+| Node shuts down | bridge sends `STOP` once before closing the serial port |
 
 The Pi-side bridge is the only component that sends `VEL`; nothing else should publish to
-the serial port.
+the serial port. The firmware ignores the PS4 pad while host control is active, and the
+bridge intentionally stops streaming when idle so the pad fallback keeps working.
+
+WARNING: network exposure
+Rosbridge has no authentication and can publish `/cmd_vel`. Keep ports `8000` and `9090`
+on a trusted LAN, or firewall them to the laptop's address; do not expose them to the
+public internet.
+
+The nav bar shows `ROBOT: ONLINE`, `ROBOT: DEGRADED`, `ROBOT: OFFLINE` or `ROBOT: E-STOP`
+from the `/diagnostics` `ESP32 Link` and `Drive` entries. In simulation, where those entries
+do not exist, it shows `ROBOT: N/A`.
 
 ## 5. Position mode
 
@@ -153,6 +205,35 @@ velocity mode; position mode is currently local to the pad and not exposed throu
 | Robot drives the wrong way | motor CAN IDs / mounting; flip that side in `applySideVelocity()` in the sketch |
 | Odometry drifts or spins | set `wheel_radius`, `track_width`, `ticks_per_wheel_rev` to the real values; wheel slip is not observable |
 | Robot stops after a second | `/cmd_vel` is not being streamed — keep the d-pad/key held, or check `command_hold_s` |
+| `ROBOT: OFFLINE` in the nav bar | check `ros2 topic echo /diagnostics`, the USB cable, `dialout` membership and the serial port |
+| Dashboard keys do nothing but the PS4 pad drives | the bridge released host control after 2 s idle; press a key again to take over |
+| Camera works in ROS but the dashboard tile is black | ensure only `camera_bridge` owns `/dev/video*` and the backend reports `local_capture_disabled` |
 
-For the simulator workflow see the README; for camera wiring see
-`docs/CONNECT_CAMERAS_AND_ROS.md`.
+## Wiring summary (M3508 platform)
+
+| Link | From | To | Notes |
+| --- | --- | --- | --- |
+| Motor power | 24 V battery | 4× C620 ESC → M3508 | battery GND → motor GND; fuse for worst-case stall |
+| CAN H/L | MCP2515 `CANH`/`CANL` | 4× M3508 CAN pair | 120 Ω terminator at both ends of the bus |
+| MCP2515 logic | ESP32 GPIO 5 (CS), 4 (INT), SPI pins (MOSI/MISO/SCK) | MCP2515 | level-shift if MCP2515 uses 5 V logic |
+| Common ground | battery GND / ESP32 / CAN module | share one ground path | star ground preferred |
+| ESP32 USB | ESP32 Micro-USB | Pi USB port | bridge sketch baud 115200; `/dev/aegis-esp32` after udev rule |
+| Webcam | webcam USB | Pi USB port | `/dev/video*` auto-created; confirm with `v4l2-ctl --list-devices` |
+
+Firmware defaults to match (`main.ino` in `~/Downloads/Postion_Velocity_control_robomaster_M3508_motor-main/`):
+- `CAN_CS = 5`, `CAN_INT = 4`, baud `CAN_1000KBPS`, MCP2515 clock `MCP_8MHZ`
+- command CAN ID `0x200`, payload order RB/LF/RF/LB (2 bytes each)
+- feedback IDs: RB `0x201`, LF `0x202`, RF `0x203`, LB `0x204`
+- `WHEEL_RADIUS = 0.05 m`, `TRACK_WIDTH = 0.28 m`, `TICKS_PER_MOTOR_REV = 8192`, `GEAR_RATIO = 1.0`
+- `MAX_RPM = 1500`, position-mode deadband 80 ticks
+
+WARNING: voltage levels
+MCP2515 modules are commonly 5 V logic; the ESP32 GPIO are 3.3 V tolerant only. If your MCP2515 runs 5 V on `MOSI`/`MISO`/`SCK`/`INT`/`CS`, insert a level shifter on those lines or use a 3.3 V module.
+
+WARNING: ground
+ESP32 and the CAN module must share ground with the motor supply (star ground is safest). Floating ground shows up as no CAN init and missing `OK,estop`.
+
+WARNING: current
+Route the 24 V motor leads and ESC logic wires away from the CAN pair and the ESP32 USB cable — motor current induces noise in CAN and encoder feedback if they share a bundle.
+
+For the simulator workflow see the README; for more camera detail see `docs/CONNECT_CAMERAS_AND_ROS.md`.

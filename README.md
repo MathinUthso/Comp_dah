@@ -46,6 +46,7 @@ robot_backend_ws/       # canonical ROS 2 workspace (build here)
     └── aegis_sim/         # Gazebo world, spawner, dashboard adapter
 
 firmware/               # ESP32 Arduino sketch for the real M3508 robot
+scripts/                # Pi one-command startup and smoke test
 docs/                   # integration manuals
 
 ## Deployment steps
@@ -59,9 +60,13 @@ docs/                   # integration manuals
 
 ### Recommended startup
 
-- `python3 start_backend.py`
+- Development / simulation: `python3 start_backend.py`
+- Raspberry Pi hardware stack: `./scripts/start_pi_stack.sh`
 
-This launches rosbridge, the backend API, and serves the frontend from the same origin.
+`start_backend.py` launches rosbridge, the backend API, and serves the frontend from the same
+origin. The Pi script additionally starts `camera_bridge` and `aegis_robot_bridge`, prints
+the LAN dashboard URL, and disables the backend's local camera capture so only one process
+owns `/dev/video*`. Check a running stack with `./scripts/smoke_test.sh`.
 
 ## Runtime notes
 
@@ -118,17 +123,29 @@ The dashboard can drive the real robot: an ESP32 runs the M3508 motor control fi
 The dashboard keeps using the same topics and the same E-STOP/RESET buttons.
 
 ```bash
-# Terminal 1: rosbridge + backend + frontend
-python3 start_backend.py
+# On the Pi: rosbridge + camera_bridge + aegis_robot_bridge + backend
+./scripts/start_pi_stack.sh
 
-# Terminal 2: Pi drive bridge (firmware flashed, ESP32 plugged in)
-source /opt/ros/jazzy/setup.bash
-source robot_backend_ws/install/setup.bash
-ros2 launch aegis_robot_bridge robot.launch.py port:=/dev/aegis-esp32
+# Pin the serial device or skip a node when needed
+AEGIS_PORT=/dev/aegis-esp32 ./scripts/start_pi_stack.sh
+SKIP_CAMERA=1 ./scripts/start_pi_stack.sh
 ```
 
-See docs/PI_ESP32_ROBOT.md for wiring, firmware, serial protocol, safety behaviour, and
-troubleshooting.
+The launcher prints the LAN URL (for example `http://192.168.1.42:8000/`); open it from the
+laptop. Rosbridge is reached at `ws://<pi>:9090` automatically. Keep both ports on a trusted
+LAN because rosbridge has no authentication.
+
+### Keyboard drive
+
+- `↑` / `W`, `↓` / `S`, `←` / `A`, `→` / `D` drive; `Shift` gives a 1.5× boost.
+- `Esc` publishes a zero `/cmd_vel` software stop.
+- `Q` / `E` and `Z` / `C` move the front/rear flippers; `Ctrl` flips down, `Shift` pairs sides.
+- `T` selects dog stance; `Shift+T` returns to neutral.
+
+The nav bar shows `ROBOT: ONLINE / DEGRADED / OFFLINE / E-STOP` from the ESP32 link and drive
+diagnostics. The bridge releases the PS4 pad after 2 s of dashboard idleness; the next key
+press takes control back. See docs/PI_ESP32_ROBOT.md for wiring, firmware, serial protocol,
+safety behaviour, and troubleshooting.
 
 ## Integration manual
 
