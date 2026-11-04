@@ -21,6 +21,7 @@
         </div>
         <div class="nav-right">
             <span id="camera-link-status" class="cam-status cam-offline">CAM: OFFLINE</span>
+            <span id="robot-link-status" class="robot-status robot-offline">ROBOT: OFFLINE</span>
             <span id="ros-link-status" class="ros-status ros-offline">ROS: OFFLINE</span>
             <span id="log-timestamp">00:00:00</span>
         </div>
@@ -50,7 +51,11 @@
                                 <div class="dp-btn dp-r">→</div>
                                 <div class="dp-btn dp-d">↓</div>
                             </div>
-                            
+                            <div class="keyboard-legend" aria-label="Keyboard drive controls">
+                                <div><span class="keycap">WASD</span> / <span class="keycap">ARROWS</span> DRIVE</div>
+                                <div><span class="keycap">SHIFT</span> BOOST &middot; <span class="keycap">ESC</span> STOP</div>
+                                <div><span class="keycap">Q/E</span> FRONT &middot; <span class="keycap">Z/C</span> REAR &middot; <span class="keycap">T</span> STANCE</div>
+                            </div>
                         </div>
                         <div class="cp-status-column">
                             <div class="status-pill status-ok">OK</div>
@@ -158,6 +163,8 @@
                             <div class="data-row"><span>BATTERY:</span> <span id="diag-battery">--</span></div>
                             <div class="data-row"><span>CPU:</span> <span id="diag-cpu">--</span></div>
                             <div class="data-row"><span>MEMORY:</span> <span id="diag-memory">--</span></div>
+                            <div class="data-row"><span>ROBOT LINK:</span> <span id="diag-robot-link">--</span></div>
+                            <div class="data-row"><span>DRIVE:</span> <span id="diag-drive">--</span></div>
                         </div>
                                 <div class="arm-feed-tall" style="position: relative; overflow: hidden;">
                                     <img id="arm-feed-inspect" alt="ARM_FEED /dev/video2" style="width:100%;height:100%;object-fit:cover;background:#000;" />

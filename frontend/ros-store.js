@@ -30,6 +30,8 @@
     const battery = entries.find((s) => String(s.name || "").toLowerCase().includes("battery"));
     const cpu = entries.find((s) => String(s.name || "").toLowerCase().includes("cpu"));
     const memory = entries.find((s) => String(s.name || "").toLowerCase().includes("memory"));
+    const robotLink = entries.find((s) => String(s.name || "").toLowerCase().includes("esp32"));
+    const drive = entries.find((s) => String(s.name || "").toLowerCase().includes("drive"));
 
     return {
       battery: {
@@ -46,6 +48,21 @@
         name: memory?.name || "Memory",
         message: memory?.message || "unknown",
         value: parseDiagValue(memory, "usage"),
+      },
+      robotLink: {
+        present: Boolean(robotLink),
+        name: robotLink?.name || "ESP32 Link",
+        message: robotLink?.message || "not reported",
+        level: Number(robotLink?.level ?? 2),
+        connected: parseDiagValue(robotLink, "connected").toLowerCase() === "true",
+        telemetryAgeSeconds: parseDiagValue(robotLink, "telemetry_age_s"),
+      },
+      drive: {
+        present: Boolean(drive),
+        name: drive?.name || "Drive",
+        message: drive?.message || "not reported",
+        level: Number(drive?.level ?? 2),
+        estop: parseDiagValue(drive, "estop").toLowerCase() === "true",
       },
       raw: entries,
     };

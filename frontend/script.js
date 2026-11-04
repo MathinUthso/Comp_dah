@@ -5,6 +5,13 @@ const CAMERA_DEVICES = (window.RosDashboardConfig && window.RosDashboardConfig.c
   webcam: '0',
   webcamFallback: '/dev/video0',
 };
+const TELEOP = (window.RosDashboardConfig && window.RosDashboardConfig.teleop) || {
+  linearMps: 0.5,
+  angularRadps: 1.0,
+  boostMultiplier: 1.5,
+  streamIntervalMs: 100,
+  flipperStepRad: 0.15,
+};
 
 let isSwapped = false;
 let timerInterval = null;
@@ -88,6 +95,36 @@ function setCameraStatus(state, detail = '') {
   }
   badge.classList.add('cam-offline');
   badge.textContent = detail ? `CAM: OFFLINE (${detail})` : 'CAM: OFFLINE';
+}
+
+function setRobotStatus(state, detail = '') {
+  const badge = document.getElementById('robot-link-status');
+  if (!badge) {
+    return;
+  }
+  badge.classList.remove('robot-online', 'robot-offline', 'robot-degraded', 'robot-estop', 'robot-unknown');
+  if (state === 'online') {
+    badge.classList.add('robot-online');
+    badge.textContent = 'ROBOT: ONLINE';
+    return;
+  }
+  if (state === 'estop') {
+    badge.classList.add('robot-estop');
+    badge.textContent = 'ROBOT: E-STOP';
+    return;
+  }
+  if (state === 'degraded') {
+    badge.classList.add('robot-degraded');
+    badge.textContent = detail ? `ROBOT: ${detail}` : 'ROBOT: DEGRADED';
+    return;
+  }
+  if (state === 'unknown') {
+    badge.classList.add('robot-unknown');
+    badge.textContent = 'ROBOT: N/A';
+    return;
+  }
+  badge.classList.add('robot-offline');
+  badge.textContent = detail ? `ROBOT: OFFLINE (${detail})` : 'ROBOT: OFFLINE';
 }
 
 function setCameraTileHealth(el, healthy) {
@@ -606,6 +643,22 @@ function applyRosState(state) {
     diagnostics ? `${diagnostics.memory.message} | ${diagnostics.memory.value}` : '--',
     diagStale
   );
+  updateDataText('diag-robot-link', diagnostics ? diagnostics.robotLink.message : '--', diagStale);
+  updateDataText('diag-drive', diagnostics ? diagnostics.drive.message : '--', diagStale);
+
+  if (state.telemetry.emergency || (diagnostics && diagnostics.drive.estop)) {
+    setRobotStatus('estop');
+  } else if (diagStale || !diagnostics) {
+    setRobotStatus('offline', 'no diagnostics');
+  } else if (!diagnostics.robotLink.present) {
+    setRobotStatus('unknown');
+  } else if (diagnostics.robotLink.level === 0 && diagnostics.robotLink.connected) {
+    setRobotStatus('online');
+  } else if (diagnostics.robotLink.connected) {
+    setRobotStatus('degraded', 'NO TELEMETRY');
+  } else {
+    setRobotStatus('offline', 'serial down');
+  }
 
   const emergencyActive = !!state.telemetry.emergency;
   const banner = document.getElementById('emergency-banner');
@@ -809,34 +862,39 @@ async function estopMission() {
 }
 
 const keyboardMovementKeys = new Set();
-const keyboardKeyMap = {
-  ArrowUp: { linear: 0.5, angular: 0 },
-  ArrowDown: { linear: -0.5, angular: 0 },
-  ArrowLeft: { linear: 0, angular: 1.0 },
-  ArrowRight: { linear: 0, angular: -1.0 },
-};
+const MOVEMENT_KEYS = new Set(["arrowup", "arrowdown", "arrowleft", "arrowright", "w", "a", "s", "d"]);
+let keyboardBoostHeld = false;
+
+function isMovementKey(key) {
+  return MOVEMENT_KEYS.has(String(key || "").toLowerCase());
+}
 
 function keyboardCommandFromPressed() {
+  const boost = keyboardBoostHeld ? Number(TELEOP.boostMultiplier) || 1 : 1;
+  const linearStep = (Number(TELEOP.linearMps) || 0.5) * boost;
+  const angularStep = (Number(TELEOP.angularRadps) || 1.0) * boost;
+  const pressed = (...keys) => keys.some((key) => keyboardMovementKeys.has(key));
+
   let linear = 0;
   let angular = 0;
-  if (keyboardMovementKeys.has("ArrowUp")) {
-    linear += 0.5;
+  if (pressed("arrowup", "w")) {
+    linear += linearStep;
   }
-  if (keyboardMovementKeys.has("ArrowDown")) {
-    linear -= 0.5;
+  if (pressed("arrowdown", "s")) {
+    linear -= linearStep;
   }
-  if (keyboardMovementKeys.has("ArrowLeft")) {
-    angular += 1.0;
+  if (pressed("arrowleft", "a")) {
+    angular += angularStep;
   }
-  if (keyboardMovementKeys.has("ArrowRight")) {
-    angular -= 1.0;
+  if (pressed("arrowright", "d")) {
+    angular -= angularStep;
   }
   return { linear, angular };
 }
 
 // Real robots need a command stream, not a single message per key press: the
 // drive bridge zeroes /cmd_vel when it stops arriving. Re-publish while held.
-const MOVE_STREAM_INTERVAL_MS = 100;
+const MOVE_STREAM_INTERVAL_MS = Math.max(20, Number(TELEOP.streamIntervalMs) || 100);
 let movementStreamTimer = null;
 let movementStreamPublisher = null;
 
@@ -889,17 +947,40 @@ function isTypingTarget(target) {
 }
 
 function handleKeyboardMovement(event) {
-  if (!rosStore || isTypingTarget(event.target) || !keyboardKeyMap[event.key]) {
+  if (!rosStore || isTypingTarget(event.target)) {
+    return;
+  }
+
+  if (event.key === "Escape") {
+    if (event.type === "keydown") {
+      event.preventDefault();
+      stopKeyboardMovement();
+      addLog("Keyboard stop requested", "warn");
+    }
+    return;
+  }
+
+  if (event.key === "Shift") {
+    keyboardBoostHeld = event.type === "keydown";
+    if (keyboardMovementKeys.size > 0) {
+      publishKeyboardCommand();
+    }
+    return;
+  }
+
+  const key = String(event.key || "").toLowerCase();
+  if (!isMovementKey(key)) {
     return;
   }
   event.preventDefault();
+
   if (event.type === "keydown") {
     if (event.repeat) {
       return;
     }
-    keyboardMovementKeys.add(event.key);
+    keyboardMovementKeys.add(key);
   } else {
-    keyboardMovementKeys.delete(event.key);
+    keyboardMovementKeys.delete(key);
   }
   if (keyboardMovementKeys.size === 0) {
     stopKeyboardMovement();
@@ -910,12 +991,13 @@ function handleKeyboardMovement(event) {
 
 function stopKeyboardMovement() {
   keyboardMovementKeys.clear();
+  keyboardBoostHeld = false;
   stopMovementStream();
 }
 
 const FLIPPER_MIN_RAD = -1.5708; // matches the URDF flipper joint limits: 90 deg down
 const FLIPPER_MAX_RAD = 1.5708; // 90 deg up
-const FLIPPER_STEP_RAD = 0.15; // one key press ~= 8.6 degrees
+const FLIPPER_STEP_RAD = Number(TELEOP.flipperStepRad) || 0.15; // one key press ~= 8.6 degrees
 const FLIPPER_JOINTS = [
   "front_left_flipper_joint",
   "front_right_flipper_joint",
@@ -945,7 +1027,7 @@ function handleFlipperKeys(event) {
     return;
   }
   const key = String(event.key || "").toLowerCase();
-  if (!["q", "e", "a", "d", "t"].includes(key)) {
+  if (!["q", "e", "z", "c", "t"].includes(key)) {
     return;
   }
   event.preventDefault();
@@ -971,23 +1053,20 @@ function handleFlipperKeys(event) {
   }
 
   const isFront = key === "q" || key === "e";
+  const isLeftKey = key === "q" || key === "z";
   const leftJoint = isFront ? "front_left_flipper_joint" : "rear_left_flipper_joint";
   const rightJoint = isFront ? "front_right_flipper_joint" : "rear_right_flipper_joint";
 
   let down = event.ctrlKey;
-  if (event.shiftKey && (key === "e" || key === "d")) {
+  if (event.shiftKey && !isLeftKey) {
     down = true;
   }
-  if (event.shiftKey && (key === "q" || key === "a")) {
+  if (event.shiftKey && isLeftKey) {
     down = false;
   }
   const direction = down ? -1 : 1;
 
-  const joints = event.shiftKey
-    ? [leftJoint, rightJoint]
-    : key === "q" || key === "a"
-      ? [leftJoint]
-      : [rightJoint];
+  const joints = event.shiftKey ? [leftJoint, rightJoint] : isLeftKey ? [leftJoint] : [rightJoint];
 
   try {
     const targets = joints.map((joint) => nextFlipperTarget(joint, direction));
@@ -1013,11 +1092,13 @@ function wireDpad() {
   if (!rosStore) {
     return;
   }
+  const linear = Number(TELEOP.linearMps) || 0.5;
+  const angular = Number(TELEOP.angularRadps) || 1.0;
   const mapping = {
-    'dp-u': { linear: 0.5, angular: 0 },
-    'dp-d': { linear: -0.5, angular: 0 },
-    'dp-l': { linear: 0, angular: 1.0 },
-    'dp-r': { linear: 0, angular: -1.0 },
+    'dp-u': { linear, angular: 0 },
+    'dp-d': { linear: -linear, angular: 0 },
+    'dp-l': { linear: 0, angular },
+    'dp-r': { linear: 0, angular: -angular },
   };
 
   Object.entries(mapping).forEach(([cls, cmd]) => {
@@ -1322,6 +1403,7 @@ function initRosLayer() {
 }
 
 function cleanupResources() {
+  stopKeyboardMovement();
   if (clockInterval) {
     clearInterval(clockInterval);
     clockInterval = null;

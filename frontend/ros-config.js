@@ -31,6 +31,14 @@
     5: "rotate_180",
   };
 
+  const TELEOP = {
+    linearMps: 0.5,
+    angularRadps: 1.0,
+    boostMultiplier: 1.5,
+    streamIntervalMs: 100,
+    flipperStepRad: 0.15,
+  };
+
   const DEVELOPMENT_HOST = "localhost";
   const host = (global.location && global.location.hostname) || DEVELOPMENT_HOST;
 
@@ -50,5 +58,6 @@
     topics: TOPICS,
     services: SERVICES,
     behaviors: BEHAVIORS,
+    teleop: TELEOP,
   };
 })(window);
