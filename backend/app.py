@@ -76,11 +76,16 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         await services["logs"].publish("rosbridge", "WARN", "connect_failed", {"error": str(exc)})
     await services["camera_status"].start()
-    services["camera_manager"].start_all()
+    camera_capture = services["settings"].enable_camera_capture
+    if camera_capture:
+        services["camera_manager"].start_all()
+    else:
+        await services["logs"].publish("camera", "INFO", "local_capture_disabled", {"owner": "camera_bridge"})
     services["watchdog"].register("diagnostics", services["diagnostics"].collect)
     yield
     await services["camera_status"].stop()
-    services["camera_manager"].stop_all()
+    if camera_capture:
+        services["camera_manager"].stop_all()
     await services["rosbridge"].close()
 
 

@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     critical_reset_service: str = "/emergency/reset"
 
     runtime_config_path: Path = Field(default=PROJECT_ROOT / "backend" / "config" / "runtime.json")
+    # Set RESCUE_ENABLE_CAMERA_CAPTURE=false when camera_bridge owns the devices.
+    enable_camera_capture: bool = True
     camera_device_glob: str = "/dev/video*"
     default_camera_fps: int = 20
     default_camera_width: int = 1280

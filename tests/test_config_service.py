@@ -10,6 +10,10 @@ def test_runtime_config_path_defaults_to_absolute_repo_path() -> None:
     assert Settings().runtime_config_path.is_absolute()
 
 
+def test_local_camera_capture_defaults_on() -> None:
+    assert Settings().enable_camera_capture is True
+
+
 def test_config_service_creates_defaults_and_deep_merges(tmp_path: Path) -> None:
     config_path = tmp_path / "runtime.json"
     service = ConfigService(Settings(runtime_config_path=config_path))
