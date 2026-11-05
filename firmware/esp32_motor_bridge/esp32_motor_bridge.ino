@@ -13,13 +13,25 @@
  * Host -> ESP32
  *   VEL,<left_rpm>,<right_rpm>  side wheel RPM, positive = forward. Implies
  *                               VELOCITY mode. Unacknowledged (sent at 20 Hz).
- *   STOP                        zero wheel RPM and lock position targets
+ *   CUR,<left_mA>,<right_mA>    direct C620 current, positive = forward.
+ *                               Clamped to +/-10000 mA. Implies CURRENT mode.
+ *                               Unacknowledged (sent at 20 Hz).
+ *   POS,<dx_mm>,<dtheta_mrad>   relative body move. The first POS after any
+ *                               other mode holds the current position, then
+ *                               adds the requested delta. Implies POSITION
+ *                               mode. Send PING to keep the link alive.
+ *   STOP                        zero RPM/current and lock position targets,
+ *                               returns the host to VELOCITY mode
  *   ESTOP                       latch emergency stop, cut drive output
  *   RESET                       clear the latch and hold zero
- *   PING                        keep-alive, replies OK,pong
+ *   PING                        keep-alive, replies OK,pong. Does not change
+ *                               the active drive mode or position target.
  *
  * ESP32 -> Host
  *   TEL,<ms>,<estop>,<cmd_l>,<cmd_r>,<rpm_l>,<rpm_r>,<ticks_l>,<ticks_r>
+ *   DRV,<T|P>,<cmd_l>,<cmd_r>,<tgt_l>,<tgt_r>,<err_l>,<err_r>
+ *       Emitted at 5 Hz while a host CURRENT or POSITION session is active.
+ *       `cmd_*` is mA in CURRENT mode; `tgt_*`/`err_*` are ticks in POSITION.
  *   OK,<message> / ERR,<message>
  *
  * `ticks_*` and `rpm_*` are side-normalised (positive = forward); left averages
@@ -27,12 +39,15 @@
  *
  * Safety
  * ------
- * - If no host command arrives for HOST_TIMEOUT_MS the wheel commands are
- *   zeroed; after HOST_LINK_IDLE_MS the PS4 pad takes over again (so the robot
- *   can still be driven if the Pi or the USB cable dies).
+ * - If no host command arrives for HOST_TIMEOUT_MS all host outputs (RPM,
+ *   current and position PID) are forced to zero. After HOST_LINK_IDLE_MS the
+ *   PS4 pad takes over again (so the robot can still be driven if the Pi or the
+ *   USB cable dies).
+ * - CURRENT commands are clamped in firmware and the POSITION PID output is
+ *   limited to +/-HOST_MAX_CURRENT_RAW (10 A) in host mode.
  * - ESTOP latches until a host RESET (or a power cycle) and overrides both the
  *   host and the pad.
- * - The Pi bridge mirrors this with its own `/cmd_vel` hold window.
+ * - The Pi bridge mirrors this with its own command hold window.
  *
  * Libraries: mcp_can, PS4Controller (same as the original sketch).
  */
@@ -83,12 +98,25 @@ const unsigned long TELEMETRY_INTERVAL = 50;   // 20 Hz telemetry to the Pi
 const unsigned long HOST_TIMEOUT_MS = 400;      // zero the wheels after this silence
 const unsigned long HOST_LINK_IDLE_MS = 2000;   // hand control back to the PS4 pad
 const int16_t HOST_MAX_RPM = MAX_RPM;
+const unsigned long DRIVE_TELEMETRY_INTERVAL = 200;  // 5 Hz DRV status line
+
+// C620 current command range: 16384 raw = 20 A, so 8192 raw = 10 A.
+const float C620_MAX_AMPS = 20.0f;
+const int16_t C620_MAX_RAW = 16384;
+const int16_t HOST_MAX_CURRENT_MA = 10000;
+const int16_t HOST_MAX_CURRENT_RAW = 8192;
+const float CURRENT_MA_TO_RAW = (float)C620_MAX_RAW / (C620_MAX_AMPS * 1000.0f);
+const long HOST_MAX_POS_DX_MM = 500;          // max 0.5 m per POS line
+const long HOST_MAX_POS_DTHETA_MRAD = 1571;   // max ~0.5 turn per POS line
 
 bool hostActive = false;
 bool estopLatched = false;
 unsigned long lastHostCmdMs = 0;
+unsigned long lastDriveTelemetry = 0;
 int16_t hostLeftRpm = 0;
 int16_t hostRightRpm = 0;
+int16_t hostLeftCurrentMa = 0;
+int16_t hostRightCurrentMa = 0;
 
 // ==========================
 // MOTOR STRUCTURE
@@ -126,6 +154,15 @@ enum ControlMode {
   MODE_POSITION    // Position control with incremental moves (pad only)
 };
 ControlMode controlMode = MODE_VELOCITY;
+
+// Host (Raspberry Pi) drive mode is independent of the pad's ControlMode so
+// torque/position commands cannot be misinterpreted by the joystick logic.
+enum HostDriveMode {
+  HOST_VELOCITY,
+  HOST_CURRENT,
+  HOST_POSITION
+};
+HostDriveMode hostDriveMode = HOST_VELOCITY;
 
 // ==========================
 // PS4 VARIABLES
@@ -191,7 +228,7 @@ void handleCANFeedback(long unsigned int rxId, byte rxBuf[]) {
 // ==========================
 // POSITION PID CONTROLLER
 // ==========================
-int16_t computePIDandGetRPM(Motor &m) {
+int16_t computePIDandGetRPM(Motor &m, int16_t max_output = MAX_RPM) {
   int64_t error = m.target_ticks - m.total_ticks;
 
   // Deadband - stop when close enough
@@ -215,9 +252,10 @@ int16_t computePIDandGetRPM(Motor &m) {
   // PID calculation
   float pid_out = Kp * (float)error + Ki * m.integral + Kd * derivative;
 
-  // Convert to RPM and clamp
+  // Convert to the output unit (RPM for the pad, C620 raw for host torque)
+  // and clamp to the caller's limit.
   int16_t rpm_cmd = (int16_t)round(pid_out);
-  rpm_cmd = constrain(rpm_cmd, -MAX_RPM, MAX_RPM);
+  rpm_cmd = constrain(rpm_cmd, (int16_t)-max_output, max_output);
 
   m.last_error = error;
   return rpm_cmd;
@@ -256,6 +294,25 @@ void stopAllPosition() {
     motors[i].last_error = 0;
     motors[i].position_reached = true;
   }
+}
+
+// Hold the current encoder position. Called on the first POS after another
+// mode, so `POS,0,0` acts as a hold command and later POS lines add to it.
+void enterHostPositionMode() {
+  for (int i = 0; i < 4; i++) {
+    motors[i].target_ticks = motors[i].total_ticks;
+    motors[i].integral = 0;
+    motors[i].last_error = 0;
+    motors[i].last_position = motors[i].total_ticks;
+    motors[i].position_reached = true;
+  }
+}
+
+void zeroHostCommands() {
+  hostLeftRpm = 0;
+  hostRightRpm = 0;
+  hostLeftCurrentMa = 0;
+  hostRightCurrentMa = 0;
 }
 
 // ==========================
@@ -358,6 +415,26 @@ int16_t clampRpm(long rpm) {
   return (int16_t)constrain(rpm, (long)-HOST_MAX_RPM, (long)HOST_MAX_RPM);
 }
 
+int16_t clampCurrentMa(long ma) {
+  return (int16_t)constrain(ma, (long)-HOST_MAX_CURRENT_MA, (long)HOST_MAX_CURRENT_MA);
+}
+
+int16_t currentMaToRaw(int16_t ma) {
+  long raw = lroundf((float)ma * CURRENT_MA_TO_RAW);
+  return (int16_t)constrain(raw, (long)-C620_MAX_RAW, (long)C620_MAX_RAW);
+}
+
+// Same side convention as applySideVelocity: positive current drives both
+// left motors forward and both right motors backward (right side inverted).
+void applySideCurrent(int16_t left_ma, int16_t right_ma) {
+  int16_t left_raw = currentMaToRaw(left_ma);
+  int16_t right_raw = currentMaToRaw(right_ma);
+  LF_vel = left_raw;
+  LB_vel = left_raw;
+  RF_vel = -right_raw;
+  RB_vel = -right_raw;
+}
+
 void markHostCommand() {
   hostActive = true;
   lastHostCmdMs = millis();
@@ -381,9 +458,10 @@ void handleHostCommand(char *line) {
 
   if (strcmp(line, "STOP") == 0) {
     markHostCommand();
-    hostLeftRpm = 0;
-    hostRightRpm = 0;
+    zeroHostCommands();
+    stopAll_vel();
     stopAllPosition();
+    hostDriveMode = HOST_VELOCITY;
     Serial.println("OK,stop");
     return;
   }
@@ -391,10 +469,10 @@ void handleHostCommand(char *line) {
   if (strcmp(line, "ESTOP") == 0) {
     markHostCommand();
     estopLatched = true;
-    hostLeftRpm = 0;
-    hostRightRpm = 0;
+    zeroHostCommands();
     stopAll_vel();
     stopAllPosition();
+    hostDriveMode = HOST_VELOCITY;
     Serial.println("OK,estop");
     return;
   }
@@ -402,10 +480,10 @@ void handleHostCommand(char *line) {
   if (strcmp(line, "RESET") == 0) {
     markHostCommand();
     estopLatched = false;
-    hostLeftRpm = 0;
-    hostRightRpm = 0;
+    zeroHostCommands();
     stopAll_vel();
     stopAllPosition();
+    hostDriveMode = HOST_VELOCITY;
     Serial.println("OK,reset");
     return;
   }
@@ -422,11 +500,76 @@ void handleHostCommand(char *line) {
 
     long left = strtol(leftText, NULL, 10);
     long right = strtol(rightText, NULL, 10);
+    if (hostDriveMode == HOST_POSITION) {
+      stopAllPosition();
+    }
+    hostDriveMode = HOST_VELOCITY;
+    hostLeftCurrentMa = 0;
+    hostRightCurrentMa = 0;
     hostLeftRpm = clampRpm(left);
     hostRightRpm = clampRpm(right);
     controlMode = MODE_VELOCITY;  // host drive is velocity based
     markHostCommand();
     return;  // VEL is unacknowledged: it arrives at 20 Hz
+  }
+
+  if (strncmp(line, "CUR,", 4) == 0) {
+    char *leftText = line + 4;
+    char *comma = strchr(leftText, ',');
+    if (comma == NULL) {
+      Serial.println("ERR,cur-format");
+      return;
+    }
+    *comma = '\0';
+    char *rightText = comma + 1;
+
+    long left = strtol(leftText, NULL, 10);
+    long right = strtol(rightText, NULL, 10);
+    if (hostDriveMode == HOST_POSITION) {
+      stopAllPosition();
+    }
+    hostDriveMode = HOST_CURRENT;
+    hostLeftRpm = 0;
+    hostRightRpm = 0;
+    hostLeftCurrentMa = clampCurrentMa(left);
+    hostRightCurrentMa = clampCurrentMa(right);
+    markHostCommand();
+    return;  // CUR is unacknowledged: it arrives at 20 Hz
+  }
+
+  if (strncmp(line, "POS,", 4) == 0) {
+    char *dxText = line + 4;
+    char *firstComma = strchr(dxText, ',');
+    if (firstComma == NULL) {
+      Serial.println("ERR,pos-format");
+      return;
+    }
+    *firstComma = '\0';
+    char *dthetaText = firstComma + 1;
+    char *secondComma = strchr(dthetaText, ',');
+    if (secondComma != NULL) {
+      *secondComma = '\0';
+    }
+
+    long dx_mm = strtol(dxText, NULL, 10);
+    long dtheta_mrad = strtol(dthetaText, NULL, 10);
+    dx_mm = constrain(dx_mm, -HOST_MAX_POS_DX_MM, HOST_MAX_POS_DX_MM);
+    dtheta_mrad = constrain(dtheta_mrad, -HOST_MAX_POS_DTHETA_MRAD, HOST_MAX_POS_DTHETA_MRAD);
+
+    if (hostDriveMode != HOST_POSITION) {
+      enterHostPositionMode();
+      hostDriveMode = HOST_POSITION;
+    }
+    hostLeftRpm = 0;
+    hostRightRpm = 0;
+    hostLeftCurrentMa = 0;
+    hostRightCurrentMa = 0;
+
+    if (dx_mm != 0 || dtheta_mrad != 0) {
+      moveByBodyDelta((float)dx_mm / 1000.0f, (float)dtheta_mrad / 1000.0f);
+    }
+    markHostCommand();
+    return;  // POS is unacknowledged; stream PING for keep-alive
   }
 
   Serial.println("ERR,unknown");
@@ -457,6 +600,10 @@ void pollHostSerial() {
   }
 }
 
+bool hostLinkStale() {
+  return hostActive && (millis() - lastHostCmdMs > HOST_TIMEOUT_MS);
+}
+
 // Zero the wheels when the host stops talking, and hand control back to the
 // pad if the link stays silent (Pi reboot, USB unplug).
 void serviceHostLink() {
@@ -465,12 +612,19 @@ void serviceHostLink() {
   }
   unsigned long now = millis();
   if (now - lastHostCmdMs > HOST_TIMEOUT_MS) {
-    hostLeftRpm = 0;
-    hostRightRpm = 0;
+    if (hostDriveMode == HOST_POSITION) {
+      // Abort the move instead of resuming it if PING returns later.
+      stopAllPosition();
+    }
+    zeroHostCommands();
   }
   if (now - lastHostCmdMs > HOST_LINK_IDLE_MS) {
     hostActive = false;
+    zeroHostCommands();
     stopAll_vel();
+    stopAllPosition();
+    hostDriveMode = HOST_VELOCITY;
+    controlMode = MODE_VELOCITY;
     Serial.println("# host link idle; PS4 control resumed");
   }
 }
@@ -490,6 +644,46 @@ void sendTelemetry() {
                 rpmRight,
                 (long)ticksLeft,
                 (long)ticksRight);
+}
+
+// Extra status line for CURRENT/POSITION sessions. The existing parser ignores
+// DRV frames, so older bridges keep working with the 9-field TEL format.
+void sendDriveTelemetry() {
+  if (!hostActive || hostDriveMode == HOST_VELOCITY) {
+    return;
+  }
+
+  char modeChar = (hostDriveMode == HOST_CURRENT) ? 'T' : 'P';
+  int16_t cmdLeft = hostLeftCurrentMa;
+  int16_t cmdRight = hostRightCurrentMa;
+  int32_t targetLeft = 0;
+  int32_t targetRight = 0;
+  int32_t errorLeft = 0;
+  int32_t errorRight = 0;
+
+  if (hostDriveMode == HOST_POSITION) {
+    int64_t leftTarget = (motors[0].target_ticks + motors[1].target_ticks) / 2;
+    int64_t rightTarget = (motors[2].target_ticks + motors[3].target_ticks) / 2;
+    int64_t leftError = ((motors[0].target_ticks - motors[0].total_ticks) +
+                         (motors[1].target_ticks - motors[1].total_ticks)) / 2;
+    int64_t rightError = ((motors[2].target_ticks - motors[2].total_ticks) +
+                          (motors[3].target_ticks - motors[3].total_ticks)) / 2;
+    targetLeft = (int32_t)leftTarget;
+    targetRight = (int32_t)-rightTarget;
+    errorLeft = (int32_t)leftError;
+    errorRight = (int32_t)-rightError;
+    cmdLeft = 0;
+    cmdRight = 0;
+  }
+
+  Serial.printf("DRV,%c,%d,%d,%ld,%ld,%ld,%ld\n",
+                modeChar,
+                cmdLeft,
+                cmdRight,
+                (long)targetLeft,
+                (long)targetRight,
+                (long)errorLeft,
+                (long)errorRight);
 }
 
 // ==========================
@@ -524,7 +718,9 @@ void setup() {
     motors[i].position_reached = true;
   }
 
-  Serial.println("# Host control: VEL,<left_rpm>,<right_rpm> | STOP | ESTOP | RESET | PING");
+  Serial.println("# Host control: VEL,<left_rpm>,<right_rpm> | CUR,<left_mA>,<right_mA> | POS,<dx_mm>,<dtheta_mrad>");
+  Serial.println("#               STOP | ESTOP | RESET | PING (keep-alive; stream it in POSITION)");
+  Serial.println("# Current clamp: +/-10000 mA; position PID limit: +/-8192 raw (10 A)");
   Serial.println("# Pad fallback resumes after 2 s without host commands");
 
   lastControl = millis();
@@ -613,12 +809,33 @@ void loop() {
       rpm_cmds[0] = rpm_cmds[1] = rpm_cmds[2] = rpm_cmds[3] = 0;
 
     } else if (hostActive) {
-      // Dashboard drive: side RPM straight from the Pi bridge.
-      applySideVelocity(hostLeftRpm, hostRightRpm);
-      rpm_cmds[0] = LF_vel;
-      rpm_cmds[1] = LB_vel;
-      rpm_cmds[2] = RF_vel;
-      rpm_cmds[3] = RB_vel;
+      if (hostLinkStale()) {
+        // Link lost: force zero even in POSITION, where the PID would
+        // otherwise keep driving toward the last target.
+        rpm_cmds[0] = rpm_cmds[1] = rpm_cmds[2] = rpm_cmds[3] = 0;
+
+      } else if (hostDriveMode == HOST_CURRENT) {
+        // Dashboard torque drive: side current straight from the Pi bridge.
+        applySideCurrent(hostLeftCurrentMa, hostRightCurrentMa);
+        rpm_cmds[0] = LF_vel;
+        rpm_cmds[1] = LB_vel;
+        rpm_cmds[2] = RF_vel;
+        rpm_cmds[3] = RB_vel;
+
+      } else if (hostDriveMode == HOST_POSITION) {
+        // Host position hold/move, with the PID output capped at 10 A.
+        for (int i = 0; i < 4; i++) {
+          rpm_cmds[i] = computePIDandGetRPM(motors[i], HOST_MAX_CURRENT_RAW);
+        }
+
+      } else {
+        // Dashboard velocity drive: side RPM straight from the Pi bridge.
+        applySideVelocity(hostLeftRpm, hostRightRpm);
+        rpm_cmds[0] = LF_vel;
+        rpm_cmds[1] = LB_vel;
+        rpm_cmds[2] = RF_vel;
+        rpm_cmds[3] = RB_vel;
+      }
 
     } else if (controlMode == MODE_VELOCITY) {
       axis_logic_velocity(X, Y);
@@ -644,6 +861,11 @@ void loop() {
   if (millis() - lastTelemetry >= TELEMETRY_INTERVAL) {
     lastTelemetry = millis();
     sendTelemetry();
+  }
+
+  if (millis() - lastDriveTelemetry >= DRIVE_TELEMETRY_INTERVAL) {
+    lastDriveTelemetry = millis();
+    sendDriveTelemetry();
   }
 
   delay(1);
