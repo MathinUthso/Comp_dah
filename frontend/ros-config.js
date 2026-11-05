@@ -16,6 +16,11 @@
     flexbeStatus: { name: "/flexbe/status", type: "std_msgs/String" },
     jointStates: { name: "/joint_states", type: "sensor_msgs/JointState" },
     cmdVel: { name: "/cmd_vel", type: "geometry_msgs/Twist" },
+    cmdCurrent: { name: "/cmd_current", type: "std_msgs/Float64MultiArray" },
+    cmdPosition: { name: "/cmd_position", type: "geometry_msgs/Twist" },
+    driveMode: { name: "/drive_mode", type: "std_msgs/String" },
+    driveModeState: { name: "/drive_mode_state", type: "std_msgs/String" },
+    driveStop: { name: "/drive_stop", type: "std_msgs/Empty" },
   };
 
   const SERVICES = {
@@ -31,12 +36,22 @@
     5: "rotate_180",
   };
 
+  // The M3508 bridge treats these as drive units. A dashboard command of
+  // 0.5 m/s only reached VEL,95 and the wheels stalled (~500-1000 needed),
+  // so the defaults are scaled to ~1000 units for straight driving and turns.
   const TELEOP = {
-    linearMps: 0.5,
-    angularRadps: 1.0,
-    boostMultiplier: 1.5,
+    linearMps: 5.5,
+    angularRadps: 37.0,
+    boostMultiplier: 1.3,
     streamIntervalMs: 100,
     flipperStepRad: 0.15,
+    torqueDefaultA: 3.0,
+    torqueMaxA: 10.0,
+    torqueBoostMultiplier: 1.3,
+    positionStepM: 0.05,
+    positionStepRad: 0.2,
+    positionBoostMultiplier: 2.0,
+    positionRepeatMs: 250,
   };
 
   const DEVELOPMENT_HOST = "localhost";

@@ -7,10 +7,11 @@ from typing import Any
 try:
     import rclpy
     from geometry_msgs.msg import Twist
+    from std_msgs.msg import Empty
     from std_srvs.srv import Trigger
 except Exception:  # pragma: no cover - ROS2 only
     rclpy = None
-    Twist = Trigger = object  # type: ignore
+    Twist = Empty = Trigger = object  # type: ignore
 
 
 @dataclass(slots=True)
@@ -40,6 +41,7 @@ class CriticalRosPublisher:
                 rclpy.init(args=None)
             self._node = rclpy.create_node("dashboard_critical_publisher")
             self._publishers["halt"] = self._node.create_publisher(Twist, self.halt_topic, 10)
+            self._publishers["drive_stop"] = self._node.create_publisher(Empty, "/drive_stop", 10)
             self._publishers["estop_client"] = self._node.create_client(Trigger, self.estop_service)
             self._publishers["reset_client"] = self._node.create_client(Trigger, self.reset_service)
 
@@ -75,7 +77,12 @@ class CriticalRosPublisher:
         msg.angular.y = 0.0
         msg.angular.z = 0.0
         self._publishers["halt"].publish(msg)
-        return CriticalCommandResult(True, "motor halt published as zero /cmd_vel", {"topic": self.halt_topic})
+        self._publishers["drive_stop"].publish(Empty())
+        return CriticalCommandResult(
+            True,
+            "motor halt published as zero /cmd_vel and /drive_stop",
+            {"topic": self.halt_topic, "drive_stop_topic": "/drive_stop"},
+        )
 
     def publish_emergency_reset(self) -> CriticalCommandResult:
         if rclpy is None:

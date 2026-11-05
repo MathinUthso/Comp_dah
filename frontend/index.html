@@ -44,6 +44,15 @@
                     <div class="control-panel-grid">
                         <div class="cp-left">
                             <button class="toggle-btn" onclick="toggleDashboard()">SWAP VIEW</button>
+                            <div class="drive-mode-selector" role="group" aria-label="Drive mode">
+                                <button type="button" class="drive-mode-btn active" data-drive-mode="velocity">VEL</button>
+                                <button type="button" class="drive-mode-btn" data-drive-mode="torque">TORQUE</button>
+                                <button type="button" class="drive-mode-btn" data-drive-mode="position">POS</button>
+                            </div>
+                            <div class="torque-control hidden" id="torque-control">
+                                <label for="torque-slider">TORQUE <span id="torque-value">3.0 A</span></label>
+                                <input id="torque-slider" type="range" min="0" max="10" step="0.5" value="3">
+                            </div>
                             <div class="dpad">
                                 <div class="dp-btn dp-u">↑</div>
                                 <div class="dp-btn dp-l">←</div>
@@ -52,8 +61,9 @@
                                 <div class="dp-btn dp-d">↓</div>
                             </div>
                             <div class="keyboard-legend" aria-label="Keyboard drive controls">
-                                <div><span class="keycap">WASD</span> / <span class="keycap">ARROWS</span> DRIVE</div>
-                                <div><span class="keycap">SHIFT</span> BOOST &middot; <span class="keycap">ESC</span> STOP</div>
+                                <div><span class="keycap">WASD</span> / <span class="keycap">ARROWS</span> DRIVE &middot; <span class="keycap">SHIFT</span> BOOST</div>
+                                <div><span class="keycap">TORQUE</span> SLIDER AMPS &middot; <span class="keycap">POS</span> INCREMENTAL</div>
+                                <div><span class="keycap">ESC</span> STOP</div>
                                 <div><span class="keycap">Q/E</span> FRONT &middot; <span class="keycap">Z/C</span> REAR &middot; <span class="keycap">T</span> STANCE</div>
                             </div>
                         </div>

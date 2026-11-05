@@ -123,6 +123,7 @@
         diagnostics: null,
         emergency: false,
         flexbeStatus: "unknown",
+        driveMode: "velocity",
         cameraDataUrl: "",
         cameraVideo2DataUrl: "",
         cameraWebcamDataUrl: "",
@@ -277,6 +278,15 @@
       emit();
     }
 
+    function handleDriveModeState(msg) {
+      const mode = String(msg.data || "").trim().toLowerCase();
+      if (!["velocity", "torque", "position"].includes(mode)) {
+        return;
+      }
+      state.telemetry.driveMode = mode;
+      emit();
+    }
+
     function handleFlexbeStatus(msg) {
       state.telemetry.flexbeStatus = String(msg.data || "unknown");
       state.actions.behaviorLabel = String(msg.data || "idle");
@@ -375,6 +385,7 @@
       unsubscribers.push(connection.subscribe(config.topics.lidarScan.name, handleLidar, config.topics.lidarScan.type));
       unsubscribers.push(connection.subscribe(config.topics.diagnostics.name, handleDiagnostics, config.topics.diagnostics.type));
       unsubscribers.push(connection.subscribe(config.topics.emergencyStatus.name, handleEmergency, config.topics.emergencyStatus.type));
+      unsubscribers.push(connection.subscribe(config.topics.driveModeState.name, handleDriveModeState, config.topics.driveModeState.type));
       unsubscribers.push(connection.subscribe(config.topics.flexbeStatus.name, handleFlexbeStatus, config.topics.flexbeStatus.type));
       unsubscribers.push(connection.subscribe(config.topics.jointStates.name, handleJointStates, config.topics.jointStates.type));
       unsubscribers.push(connection.subscribe(config.topics.cameraCompressed.name, handleCameraCompressed, config.topics.cameraCompressed.type));
@@ -409,6 +420,30 @@
         angular: { x: 0, y: 0, z: Number(angularZ || 0) },
       };
       connection.publish(config.topics.cmdVel.name, config.topics.cmdVel.type, cmd);
+    }
+
+    function publishCmdCurrent(leftA, rightA) {
+      connection.publish(config.topics.cmdCurrent.name, config.topics.cmdCurrent.type, {
+        data: [Number(leftA || 0), Number(rightA || 0)],
+      });
+    }
+
+    function publishCmdPosition(dxM, dthetaRad) {
+      const cmd = {
+        linear: { x: Number(dxM || 0), y: 0, z: 0 },
+        angular: { x: 0, y: 0, z: Number(dthetaRad || 0) },
+      };
+      connection.publish(config.topics.cmdPosition.name, config.topics.cmdPosition.type, cmd);
+    }
+
+    function publishDriveMode(mode) {
+      connection.publish(config.topics.driveMode.name, config.topics.driveMode.type, {
+        data: String(mode || "velocity"),
+      });
+    }
+
+    function publishDriveStop() {
+      connection.publish(config.topics.driveStop.name, config.topics.driveStop.type, {});
     }
 
     function publishFlipperCommand(jointNames, position) {
@@ -473,6 +508,10 @@
       cleanup,
       publishCmdVel,
       stopCmdVel,
+      publishCmdCurrent,
+      publishCmdPosition,
+      publishDriveMode,
+      publishDriveStop,
       publishFlipperCommand,
       triggerEstop,
       executeBehavior,

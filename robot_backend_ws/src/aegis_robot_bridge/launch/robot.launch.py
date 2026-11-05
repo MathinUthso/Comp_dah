@@ -18,6 +18,8 @@ def generate_launch_description() -> LaunchDescription:
     max_wheel_rpm = LaunchConfiguration("max_wheel_rpm")
     command_rate_hz = LaunchConfiguration("command_rate_hz")
     command_hold_s = LaunchConfiguration("command_hold_s")
+    max_current_a = LaunchConfiguration("max_current_a")
+    position_ping_s = LaunchConfiguration("position_ping_s")
     telemetry_timeout_s = LaunchConfiguration("telemetry_timeout_s")
 
     bridge = Node(
@@ -35,6 +37,8 @@ def generate_launch_description() -> LaunchDescription:
                 "max_wheel_rpm": ParameterValue(max_wheel_rpm, value_type=float),
                 "command_rate_hz": ParameterValue(command_rate_hz, value_type=float),
                 "command_hold_s": ParameterValue(command_hold_s, value_type=float),
+                "max_current_a": ParameterValue(max_current_a, value_type=float),
+                "position_ping_s": ParameterValue(position_ping_s, value_type=float),
                 "telemetry_timeout_s": ParameterValue(telemetry_timeout_s, value_type=float),
             }
         ],
@@ -57,6 +61,16 @@ def generate_launch_description() -> LaunchDescription:
                 "command_hold_s",
                 default_value="0.35",
                 description="How long /cmd_vel is held before the bridge commands zero.",
+            ),
+            DeclareLaunchArgument(
+                "max_current_a",
+                default_value="10.0",
+                description="Torque-mode current clamp in amps (firmware also clamps to 10 A).",
+            ),
+            DeclareLaunchArgument(
+                "position_ping_s",
+                default_value="0.18",
+                description="Keep-alive interval while holding a position target.",
             ),
             DeclareLaunchArgument(
                 "telemetry_timeout_s",

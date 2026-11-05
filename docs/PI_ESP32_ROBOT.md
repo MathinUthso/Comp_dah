@@ -19,11 +19,16 @@ the dashboard needs no robot-specific code:
 
 | Interface | Direction | Purpose |
 | --- | --- | --- |
-| `/cmd_vel` (`geometry_msgs/Twist`) | subscribe | body velocity from the dashboard (d-pad, WASD/arrow keys, Shift boost) |
+| `/cmd_vel` (`geometry_msgs/Twist`) | subscribe | body velocity from the dashboard in VELOCITY mode |
+| `/cmd_current` (`std_msgs/Float64MultiArray`) | subscribe | `[left_A, right_A]`, ±10 A, in TORQUE mode |
+| `/cmd_position` (`geometry_msgs/Twist`) | subscribe | `linear.x` = forward step (m), `angular.z` = yaw step (rad), in POSITION mode |
+| `/drive_mode` (`std_msgs/String`) | subscribe | `velocity` / `torque` / `position` |
+| `/drive_mode_state` (`std_msgs/String`) | publish | bridge-confirmed mode (resets to velocity after E-stop) |
+| `/drive_stop` (`std_msgs/Empty`) | subscribe | immediate `STOP` and return to VELOCITY |
 | `/emergency/estop`, `/emergency/reset` (`std_srvs/Trigger`) | serve | E-STOP button and RESET button |
 | `/emergency/status` (`std_msgs/Bool`) | publish | latched E-stop state |
 | `/hardware/odometry` (`nav_msgs/Odometry`) | publish | dead-reckoned pose from the motor encoders |
-| `/diagnostics` (`diagnostic_msgs/DiagnosticArray`) | publish | serial link, motor RPM, commanded RPM |
+| `/diagnostics` (`diagnostic_msgs/DiagnosticArray`) | publish | serial link, mode, motor RPM, current/position commands |
 
 `/proximity/range`, `/thermal/temperature`, `/scan`, `/camera/*` are not produced by this
 bridge. `camera_bridge` publishes the camera topics; the Pi startup script sets
@@ -56,14 +61,17 @@ Newline-delimited ASCII at 115200 baud. The Pi side lives in
 | Pi → ESP32 | Meaning |
 | --- | --- |
 | `VEL,<left_rpm>,<right_rpm>` | side wheel RPM, positive = forward; implies velocity mode; unacknowledged (20 Hz) |
-| `STOP` | zero RPM and keep host control for the firmware's 2 s idle window |
+| `CUR,<left_mA>,<right_mA>` | direct C620 current, positive = forward, clamped to ±10000 mA; implies torque mode; unacknowledged (20 Hz) |
+| `POS,<dx_mm>,<dtheta_mrad>` | relative position move; the first `POS` holds the current position, then adds the delta; implies position mode; unacknowledged |
+| `STOP` | zero RPM/current and hold position; returns the host to velocity mode |
 | `ESTOP` | latch E-stop and cut drive output |
 | `RESET` | clear the latch and hold zero |
-| `PING` | keep-alive, replies `OK,pong` (the bridge uses telemetry, not PING, for health) |
+| `PING` | keep-alive, replies `OK,pong`; stream while holding a position target |
 
 | ESP32 → Pi | Meaning |
 | --- | --- |
 | `TEL,<ms>,<estop>,<cmd_l>,<cmd_r>,<rpm_l>,<rpm_r>,<ticks_l>,<ticks_r>` | 20 Hz telemetry; RPM/ticks are side-normalised (positive = forward) |
+| `DRV,<T/P>,<cmd_l>,<cmd_r>,<tgt_l>,<tgt_r>,<err_l>,<err_r>` | 5 Hz status while a torque/position session is active; mA in T, ticks in P |
 | `OK,<message>` / `ERR,<message>` | reply to `STOP`/`ESTOP`/`RESET`/`PING` |
 
 Lines the firmware prints for humans (`# ...`) are ignored by the Pi, so debug prints are safe.
@@ -141,7 +149,7 @@ ros2 launch aegis_robot_bridge robot.launch.py port:=/dev/aegis-esp32
 
 Omit `port:=` to auto-detect. Useful overrides: `baud`, `wheel_radius`, `track_width`,
 `ticks_per_wheel_rev`, `max_wheel_rpm`, `command_rate_hz`, `command_hold_s`,
-`telemetry_timeout_s`.
+`max_current_a`, `position_ping_s`, `telemetry_timeout_s`.
 
 Then open `http://<pi>:8000/` from the laptop. The launcher prints the LAN URLs; the frontend
 builds `ws://<pi>:9090` from `window.location`, so no ROS cross-machine setup is needed.
@@ -154,20 +162,26 @@ builds `ws://<pi>:9090` from `window.location`, so no ROS cross-machine setup is
 | `↓` / `S` | reverse |
 | `←` / `A` | turn left |
 | `→` / `D` | turn right |
-| `Shift` + drive key | 1.5× speed boost |
-| `Esc` | software stop (publishes zero `/cmd_vel`) |
+| `Shift` + drive key | speed/current boost (1.3× velocity/torque, 2× position step) |
+| `Esc` | drive stop (publishes `/drive_stop`, returns to VELOCITY) |
+| mode buttons | `VEL` = velocity, `TORQUE` = current with the slider, `POS` = incremental position hold |
 | `Q` / `E` | front-left / front-right flipper up (Ctrl = down, Shift = pair) |
 | `Z` / `C` | rear-left / rear-right flipper up (Ctrl = down, Shift = pair) |
 | `T` | dog stance (all flippers down); `Shift+T` returns to neutral |
 
-The dashboard streams `/cmd_vel` at 10 Hz while a key or d-pad button is held. Speeds,
+The dashboard streams the active mode while a key or d-pad button is held: `/cmd_vel`
+at 10 Hz in VELOCITY, `/cmd_current` at 10 Hz in TORQUE, and one `/cmd_position` step every
+250 ms in POSITION. Torque mode uses the 0–10 A slider; the bridge and firmware both clamp
+to 10 A. Position steps default to 5 cm / 0.2 rad and are held by the firmware PID. Speeds,
 boost, stream rate and flipper step are in `frontend/ros-config.js` under `teleop`.
 
 ## 4. Safety behaviour
 
 | Situation | Robot behaviour |
 | --- | --- |
-| `/cmd_vel` stops arriving (tab closed, Wi-Fi drop) for `command_hold_s` (0.35 s) | bridge sends one `STOP` and stops transmitting; wheels stop immediately |
+| velocity/torque command stops arriving (tab closed, Wi-Fi drop) for `command_hold_s` (0.35 s) | bridge sends one `STOP`; wheels stop immediately |
+| position keep-alive stops arriving for the firmware's 400 ms host timeout | firmware zeroes the PID and holds the current position |
+| mode switch or E-stop reset | bridge/firmware return to VELOCITY; torque/position must be reselected |
 | Dashboard idle (no key held) for about 2 s | firmware hands control back to the PS4 pad; the next dashboard key press takes over immediately |
 | Bridge sees no telemetry for `telemetry_timeout_s` (1 s) | bridge sends one `STOP`, reports an ERROR diagnostic, and stops streaming |
 | Serial cable unplugged / Pi reboot | firmware zeroes the wheels; after 2 s the PS4 pad can drive again |
@@ -175,12 +189,12 @@ boost, stream rate and flipper step are in `frontend/ros-config.js` under `teleo
 | ESP32 does not answer `ESTOP` | the bridge still latches locally, the service returns `success: false` with the reason, and the backend shows the failure |
 | Node shuts down | bridge sends `STOP` once before closing the serial port |
 
-The Pi-side bridge is the only component that sends `VEL`; nothing else should publish to
-the serial port. The firmware ignores the PS4 pad while host control is active, and the
+The Pi-side bridge is the only component that sends `VEL`/`CUR`/`POS`; nothing else should
+publish to the serial port. The firmware ignores the PS4 pad while host control is active, and the
 bridge intentionally stops streaming when idle so the pad fallback keeps working.
 
 WARNING: network exposure
-Rosbridge has no authentication and can publish `/cmd_vel`. Keep ports `8000` and `9090`
+Rosbridge has no authentication and can publish `/cmd_vel`, `/cmd_current` and `/cmd_position`. Keep ports `8000` and `9090`
 on a trusted LAN, or firewall them to the laptop's address; do not expose them to the
 public internet.
 

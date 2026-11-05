@@ -6,11 +6,18 @@ const CAMERA_DEVICES = (window.RosDashboardConfig && window.RosDashboardConfig.c
   webcamFallback: '/dev/video0',
 };
 const TELEOP = (window.RosDashboardConfig && window.RosDashboardConfig.teleop) || {
-  linearMps: 0.5,
-  angularRadps: 1.0,
-  boostMultiplier: 1.5,
+  linearMps: 5.5,
+  angularRadps: 37.0,
+  boostMultiplier: 1.3,
   streamIntervalMs: 100,
   flipperStepRad: 0.15,
+  torqueDefaultA: 3.0,
+  torqueMaxA: 10.0,
+  torqueBoostMultiplier: 1.3,
+  positionStepM: 0.05,
+  positionStepRad: 0.2,
+  positionBoostMultiplier: 2.0,
+  positionRepeatMs: 250,
 };
 
 let isSwapped = false;
@@ -33,9 +40,17 @@ let latestCameraStatus = null;
 let latestCameraMetadata = null;
 let latestVisionDetection = null;
 let latestVisionTile = 'CAM_01';
+let driveMode = 'velocity';
+let torqueAmps = clampTorqueAmps(TELEOP.torqueDefaultA);
 let cameraPollErrorReported = false;
 let cameraMetadataPollErrorReported = false;
 let visionDetectionPollErrorReported = false;
+
+function clampTorqueAmps(value) {
+  const max = Math.max(0, Number(TELEOP.torqueMaxA) || 10);
+  const amps = Number(value);
+  return Number.isFinite(amps) ? Math.min(max, Math.max(0, amps)) : 0;
+}
 
 function apiUrl(path) {
   return `${API_BASE}${path}`;
@@ -580,6 +595,7 @@ function applyRosState(state) {
     return;
   }
   latestRosState = state;
+  syncDriveModeFromState(state);
 
   const connectionStatus = state.connection.status;
   if (connectionStatus === 'connected') {
@@ -869,32 +885,113 @@ function isMovementKey(key) {
   return MOVEMENT_KEYS.has(String(key || "").toLowerCase());
 }
 
-function keyboardCommandFromPressed() {
-  const boost = keyboardBoostHeld ? Number(TELEOP.boostMultiplier) || 1 : 1;
-  const linearStep = (Number(TELEOP.linearMps) || 0.5) * boost;
-  const angularStep = (Number(TELEOP.angularRadps) || 1.0) * boost;
-  const pressed = (...keys) => keys.some((key) => keyboardMovementKeys.has(key));
+const DRIVE_MODES = new Set(["velocity", "torque", "position"]);
+const DRIVE_MODE_LABELS = {
+  velocity: "VELOCITY",
+  torque: "TORQUE",
+  position: "POSITION",
+};
 
-  let linear = 0;
-  let angular = 0;
+function syncDriveModeUi() {
+  document.querySelectorAll(".drive-mode-btn").forEach((button) => {
+    button.classList.toggle("active", button.dataset.driveMode === driveMode);
+  });
+  const control = document.getElementById("torque-control");
+  if (control) {
+    control.classList.toggle("hidden", driveMode !== "torque");
+  }
+  const maxAmps = Math.max(0, Number(TELEOP.torqueMaxA) || 10);
+  const slider = document.getElementById("torque-slider");
+  if (slider) {
+    slider.max = String(maxAmps);
+    slider.value = String(torqueAmps);
+  }
+  const readout = document.getElementById("torque-value");
+  if (readout) {
+    readout.textContent = `${torqueAmps.toFixed(1)} A`;
+  }
+}
+
+function setDriveMode(mode, publish = true) {
+  if (!DRIVE_MODES.has(mode)) {
+    return;
+  }
+  if (mode === driveMode) {
+    syncDriveModeUi();
+    return;
+  }
+  stopKeyboardMovement(false);
+  driveMode = mode;
+  syncDriveModeUi();
+  if (publish && rosStore) {
+    publishSafely(() => rosStore.publishDriveMode(mode), "drive mode publish failed");
+  }
+  addLog(`Drive mode: ${DRIVE_MODE_LABELS[mode]}`, "info");
+}
+
+function syncDriveModeFromState(state) {
+  const mode = state?.telemetry?.driveMode;
+  if (!mode || !DRIVE_MODES.has(mode) || mode === driveMode) {
+    return;
+  }
+  driveMode = mode;
+  syncDriveModeUi();
+}
+
+function driveAxesFromPressed() {
+  const pressed = (...keys) => keys.some((key) => keyboardMovementKeys.has(key));
+  let forward = 0;
+  let turn = 0;
   if (pressed("arrowup", "w")) {
-    linear += linearStep;
+    forward += 1;
   }
   if (pressed("arrowdown", "s")) {
-    linear -= linearStep;
+    forward -= 1;
   }
   if (pressed("arrowleft", "a")) {
-    angular += angularStep;
+    turn += 1;
   }
   if (pressed("arrowright", "d")) {
-    angular -= angularStep;
+    turn -= 1;
   }
-  return { linear, angular };
+  return { forward, turn };
+}
+
+function publishAxes(forward, turn, boosted) {
+  if (!rosStore) {
+    return;
+  }
+  if (driveMode === "torque") {
+    const boost = boosted ? Number(TELEOP.torqueBoostMultiplier) || 1 : 1;
+    const magnitude = clampTorqueAmps(torqueAmps * boost);
+    const limit = clampTorqueAmps(TELEOP.torqueMaxA);
+    const left = Math.max(-limit, Math.min(limit, (forward - turn) * magnitude));
+    const right = Math.max(-limit, Math.min(limit, (forward + turn) * magnitude));
+    if (left || right) {
+      publishSafely(() => rosStore.publishCmdCurrent(left, right), "torque publish failed");
+    }
+    return;
+  }
+  if (driveMode === "position") {
+    const boost = boosted ? Number(TELEOP.positionBoostMultiplier) || 1 : 1;
+    const dx = forward * (Number(TELEOP.positionStepM) || 0.05) * boost;
+    const dtheta = turn * (Number(TELEOP.positionStepRad) || 0.2) * boost;
+    if (dx || dtheta) {
+      publishSafely(() => rosStore.publishCmdPosition(dx, dtheta), "position publish failed");
+    }
+    return;
+  }
+  const boost = boosted ? Number(TELEOP.boostMultiplier) || 1 : 1;
+  const linear = forward * (Number(TELEOP.linearMps) || 0.5) * boost;
+  const angular = turn * (Number(TELEOP.angularRadps) || 1.0) * boost;
+  publishSafely(() => rosStore.publishCmdVel(linear, angular), "cmd_vel publish failed");
 }
 
 // Real robots need a command stream, not a single message per key press: the
-// drive bridge zeroes /cmd_vel when it stops arriving. Re-publish while held.
+// drive bridge zeroes the active command when it stops arriving. Position mode
+// is different: each message adds a small target delta, so it repeats slower.
 const MOVE_STREAM_INTERVAL_MS = Math.max(20, Number(TELEOP.streamIntervalMs) || 100);
+const POSITION_REPEAT_MS = Math.max(50, Number(TELEOP.positionRepeatMs) || 250);
 let movementStreamTimer = null;
 let movementStreamPublisher = null;
 
@@ -909,11 +1006,30 @@ function publishSafely(action, label) {
   }
 }
 
+function activeStreamIntervalMs() {
+  return driveMode === "position" ? POSITION_REPEAT_MS : MOVE_STREAM_INTERVAL_MS;
+}
+
 function startMovementStream(publisher) {
   stopMovementStream(false);
   movementStreamPublisher = publisher;
-  publishSafely(publisher, "cmd_vel publish failed");
-  movementStreamTimer = setInterval(() => publishSafely(movementStreamPublisher, "cmd_vel publish failed"), MOVE_STREAM_INTERVAL_MS);
+  publishSafely(publisher, "drive publish failed");
+  movementStreamTimer = setInterval(
+    () => publishSafely(movementStreamPublisher, "drive publish failed"),
+    activeStreamIntervalMs()
+  );
+}
+
+function stopActiveMotion() {
+  if (!rosStore) {
+    return;
+  }
+  if (driveMode === "torque") {
+    publishSafely(() => rosStore.publishCmdCurrent(0, 0), "torque stop failed");
+  } else if (driveMode === "velocity") {
+    publishSafely(() => rosStore.stopCmdVel(), "cmd_vel stop failed");
+  }
+  // Position mode holds its target; releasing the keys only stops new steps.
 }
 
 function stopMovementStream(sendStop = true) {
@@ -923,13 +1039,23 @@ function stopMovementStream(sendStop = true) {
   }
   movementStreamPublisher = null;
   if (sendStop) {
-    publishSafely(() => rosStore.stopCmdVel(), "cmd_vel stop failed");
+    stopActiveMotion();
   }
 }
 
+function forceDriveStop() {
+  stopKeyboardMovement(false);
+  if (rosStore) {
+    publishSafely(() => rosStore.publishDriveStop(), "drive stop failed");
+  }
+  driveMode = "velocity";
+  syncDriveModeUi();
+  addLog("Drive STOP requested", "warn");
+}
+
 function publishKeyboardCommand() {
-  const command = keyboardCommandFromPressed();
-  publishSafely(() => rosStore.publishCmdVel(command.linear, command.angular), "keyboard cmd_vel publish failed");
+  const { forward, turn } = driveAxesFromPressed();
+  publishAxes(forward, turn, keyboardBoostHeld);
 }
 
 function ensureKeyboardStream() {
@@ -954,15 +1080,14 @@ function handleKeyboardMovement(event) {
   if (event.key === "Escape") {
     if (event.type === "keydown") {
       event.preventDefault();
-      stopKeyboardMovement();
-      addLog("Keyboard stop requested", "warn");
+      forceDriveStop();
     }
     return;
   }
 
   if (event.key === "Shift") {
     keyboardBoostHeld = event.type === "keydown";
-    if (keyboardMovementKeys.size > 0) {
+    if (keyboardMovementKeys.size > 0 && driveMode !== "position") {
       publishKeyboardCommand();
     }
     return;
@@ -989,10 +1114,24 @@ function handleKeyboardMovement(event) {
   ensureKeyboardStream();
 }
 
-function stopKeyboardMovement() {
+function stopKeyboardMovement(sendStop = true) {
   keyboardMovementKeys.clear();
   keyboardBoostHeld = false;
-  stopMovementStream();
+  stopMovementStream(sendStop);
+}
+
+function wireDriveModeControls() {
+  document.querySelectorAll(".drive-mode-btn").forEach((button) => {
+    button.addEventListener("click", () => setDriveMode(button.dataset.driveMode));
+  });
+  const slider = document.getElementById("torque-slider");
+  if (slider) {
+    slider.addEventListener("input", () => {
+      torqueAmps = clampTorqueAmps(slider.value);
+      syncDriveModeUi();
+    });
+  }
+  syncDriveModeUi();
 }
 
 const FLIPPER_MIN_RAD = -1.5708; // matches the URDF flipper joint limits: 90 deg down
@@ -1078,6 +1217,10 @@ function handleFlipperKeys(event) {
   }
 }
 
+function handleWindowBlur() {
+  stopKeyboardMovement();
+}
+
 function wireKeyboardControls() {
   if (!rosStore) {
     return;
@@ -1085,20 +1228,18 @@ function wireKeyboardControls() {
   window.addEventListener("keydown", handleKeyboardMovement);
   window.addEventListener("keyup", handleKeyboardMovement);
   window.addEventListener("keydown", handleFlipperKeys);
-  window.addEventListener("blur", stopKeyboardMovement);
+  window.addEventListener("blur", handleWindowBlur);
 }
 
 function wireDpad() {
   if (!rosStore) {
     return;
   }
-  const linear = Number(TELEOP.linearMps) || 0.5;
-  const angular = Number(TELEOP.angularRadps) || 1.0;
   const mapping = {
-    'dp-u': { linear, angular: 0 },
-    'dp-d': { linear: -linear, angular: 0 },
-    'dp-l': { linear: 0, angular },
-    'dp-r': { linear: 0, angular: -angular },
+    'dp-u': { forward: 1, turn: 0 },
+    'dp-d': { forward: -1, turn: 0 },
+    'dp-l': { forward: 0, turn: 1 },
+    'dp-r': { forward: 0, turn: -1 },
   };
 
   Object.entries(mapping).forEach(([cls, cmd]) => {
@@ -1110,7 +1251,7 @@ function wireDpad() {
 
     const start = (event) => {
       event.preventDefault();
-      startMovementStream(() => rosStore.publishCmdVel(cmd.linear, cmd.angular));
+      startMovementStream(() => publishAxes(cmd.forward, cmd.turn, keyboardBoostHeld));
     };
 
     const stop = (event) => {
@@ -1398,6 +1539,7 @@ function initRosLayer() {
   rosStore.init();
 
   wireDpad();
+  wireDriveModeControls();
   wireBehaviorButtons();
   wireKeyboardControls();
 }
@@ -1431,7 +1573,7 @@ function cleanupResources() {
   window.removeEventListener("keydown", handleKeyboardMovement);
   window.removeEventListener("keyup", handleKeyboardMovement);
   window.removeEventListener("keydown", handleFlipperKeys);
-  window.removeEventListener("blur", stopKeyboardMovement);
+  window.removeEventListener("blur", handleWindowBlur);
   if (rosUnsubscribe) {
     rosUnsubscribe();
     rosUnsubscribe = null;

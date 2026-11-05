@@ -14,7 +14,8 @@
         @keyframes sweep { from { transform: translateY(-100%); } to { transform: translateY(100%); } }
 
         * { box-sizing: border-box; cursor: default; }
-        body { margin: 0; height: 100vh; display: flex; flex-direction: column; background-color: #556677; background-image: radial-gradient(#445566 1px, transparent 1px); background-size: 3px 3px; font-family: var(--font-main); overflow: hidden; }
+        body { margin: 0; height: 100vh; height: 100dvh; display: flex; flex-direction: column; background-color: #556677; background-image: radial-gradient(#445566 1px, transparent 1px); background-size: 3px 3px; font-family: var(--font-main); overflow: hidden; }
+        nav, .emergency-banner { flex-shrink: 0; }
 
         nav{ height: 28px;
              background: var(--platinum);
@@ -89,11 +90,11 @@
         .ros-online { background: var(--apple-green); }
         .ros-offline { background: var(--apple-red); }
         .ros-degraded { background: var(--apple-orange); }
-        .hero-container { display: grid; grid-template-columns: 3fr 1fr; gap: 12px; padding: 12px; flex-grow: 1; height: calc(100vh - 28px); }
+        .hero-container { display: grid; grid-template-columns: 3fr 1fr; gap: 12px; padding: 12px; flex: 1 1 auto; min-height: 0; overflow: hidden; }
         .left-hero { display: grid; grid-template-rows: 3fr 1fr; gap: 12px; min-height: 0; }
         .left-hero-top { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 8px; height: 100%; min-height: 0; }
         .left-hero-bottom { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; height: 100%; min-height: 0; }
-        .right-hero { display: grid; grid-template-rows: 2.2fr 1fr; gap: 12px; }
+        .right-hero { display: grid; grid-template-rows: 2.2fr 1fr; gap: 12px; min-height: 0; }
         
         .window { background: var(--platinum); border: 1px solid #000; box-shadow: inset 1px 1px var(--bezel-light), 1px 1px #000; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
         .title-bar { height: 20px; background: repeating-linear-gradient(0deg, #000, #000 1px, transparent 1px, transparent 2px); background-size: 100% 2px; margin: 2px 4px; border: 1px solid #000; background-clip: content-box; padding: 0 30px; }
@@ -106,7 +107,13 @@
         .dp-btn { width: 16px; height: 16px; border-radius: 50%; border: 1px solid #000; background: var(--apple-orange); color: white; display: flex; align-items: center; justify-content: center; font-size: 9px; }
         .keyboard-legend { width: 100%; margin-top: 3px; font-family: "Courier New", monospace; font-size: 7px; line-height: 1.45; color: #222; text-align: center; }
         .keycap { display: inline-block; padding: 0 2px; border: 1px solid #666; border-radius: 2px; background: #fff; font-weight: bold; }
-        .toggle-btn { background: #444; color: white; border: 1px solid #000; font-size: 8px; padding: 4px; cursor: pointer; width: 100%; height: 40%; margin-bottom: 2px; font-weight: bold; }
+        .toggle-btn { background: #444; color: white; border: 1px solid #000; font-size: 8px; padding: 3px; cursor: pointer; width: 100%; margin-bottom: 2px; font-weight: bold; }
+        .drive-mode-selector { display: flex; width: 100%; gap: 2px; margin-bottom: 2px; }
+        .drive-mode-btn { flex: 1; background: #b9b9b9; color: #222; border: 1px solid #000; font-family: "Courier New", monospace; font-size: 7px; font-weight: bold; padding: 2px 0; cursor: pointer; }
+        .drive-mode-btn.active { background: var(--apple-blue); color: #fff; }
+        .torque-control { width: 100%; font-family: "Courier New", monospace; font-size: 7px; line-height: 1.2; color: #222; text-align: center; }
+        .torque-control label { display: flex; justify-content: space-between; margin-bottom: 1px; }
+        .torque-control input[type="range"] { width: 100%; height: 10px; accent-color: var(--apple-orange); }
         .estop-large {  width: 100%; height: 100%; background: var(--apple-red);  border: 2px solid #000; color: white; font-size: 40px; display: flex; align-items: center; justify-content: center; box-shadow: 2px 2px 0 #000; }
         .status-pill { text-align: center; color: white; font-size: 9px; font-weight: bold; padding: 2px; border: 1px solid #000; width: 100%; height: 25%; }
 
@@ -122,14 +129,14 @@
         .sys-pane { padding: 8px; font-size: 14px; flex-grow: 1; display: none; }
         .sys-pane.active { display: block; }
         .data-row { background: #fff; border: 1px solid #999; height: 30px; padding: 4px; margin-bottom: 3px; font-family: monospace; display: flex; justify-content: space-between; }
-        .sys-persistent-footer { height: 100px; background: #000; border-top: 2px solid var(--bezel-dark); position: relative; flex-shrink: 0; display: flex; gap: 6px; padding: 4px; }
+        .sys-persistent-footer { height: 100px; background: #000; border-top: 2px solid var(--bezel-dark); position: relative; flex-shrink: 0; display: flex; gap: 6px; padding: 4px; overflow: hidden; }
         .sys-log-shell { flex: 1 1 60%; min-width: 0; }
         .footer-lidar-shell { flex: 1 1 40%; min-width: 0; display: flex; flex-direction: column; border: 1px solid #0f0; background: #050b08; }
         .footer-lidar-titlebar { background: #111; color: #4dff9a; font-family: "Courier New", monospace; font-size: 9px; padding: 2px 6px; display: flex; justify-content: space-between; border-bottom: 1px solid #0f0; }
         #lidar-canvas-footer { flex: 1 1 auto; width: 100%; height: 100%; display: block; }
         
         /* --- BEHAVIOR TREE --- */
-        .tab-strip { display: flex; gap: 0; background: var(--apple-gray); border: 1px solid #000; border-bottom: 1px solid #000; height: 30px; align-self: flex-start; overflow: hidden; }
+        .tab-strip { display: flex; gap: 0; background: var(--apple-gray); border: 1px solid #000; border-bottom: 1px solid #000; height: 30px; align-self: flex-start; overflow: hidden; flex-shrink: 0; }
         .tab-strip-sys { width: 420px; }
         .tab-strip-behavior { width: 320px; }
         .tab { text-align: center; font-size: 10px; font-weight: bold; color: #ccc; cursor: pointer; border-right: 1px solid #333; white-space: nowrap; height: 100%; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; }
@@ -353,7 +360,7 @@
         .mission-id { color: var(--apple-orange); }
         .priority-high { color: red; }
 
-        .sys-content-scroll { flex-grow: 1; overflow-y: auto; background: #f0f0f0; }
+        .sys-content-scroll { flex-grow: 1; min-height: 0; overflow-y: auto; background: #f0f0f0; }
         .section-title { text-align: center; font-weight: bold; font-size: 13px; margin-bottom: 8px; }
         .binary-container {
             display: flex;
@@ -531,7 +538,8 @@
         .sys-log-shell {
             background: #000;
             border-top: 2px solid var(--bezel-dark);
-            height: 160px;
+            height: 100%;
+            min-height: 0;
             display: flex;
             flex-direction: column;
         }
@@ -546,6 +554,7 @@
         }
         #persistent-logs {
             flex-grow: 1;
+            min-height: 0;
             overflow-y: auto;
             padding: 5px;
             font-family: "Courier New", monospace;

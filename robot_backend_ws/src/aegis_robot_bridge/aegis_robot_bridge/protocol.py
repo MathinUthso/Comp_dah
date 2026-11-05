@@ -6,14 +6,17 @@ USB serial at 115200 baud.
 Host -> ESP32::
 
     VEL,<left_rpm>,<right_rpm>   wheel RPM, positive = forward (unacknowledged)
-    STOP                         zero wheel RPM, keep host control
+    CUR,<left_mA>,<right_mA>     direct current, clamped to +/-10000 mA
+    POS,<dx_mm>,<dtheta_mrad>    relative position move (first POS holds)
+    STOP                         zero drive output, return host to velocity
     ESTOP                        latch emergency stop, cut drive output
     RESET                        clear the latch and hold zero
-    PING                         keep-alive
+    PING                         keep-alive (stream while in position mode)
 
 ESP32 -> Host::
 
     TEL,<ms>,<estop>,<cmd_l>,<cmd_r>,<rpm_l>,<rpm_r>,<ticks_l>,<ticks_r>
+    DRV,<T|P>,<cmd_l>,<cmd_r>,<tgt_l>,<tgt_r>,<err_l>,<err_r>
     OK,<message>
     ERR,<message>
 
@@ -33,6 +36,9 @@ from dataclasses import dataclass
 
 BAUD_RATE = 115200
 MAX_WHEEL_RPM = 1500.0
+MAX_CURRENT_A = 10.0
+MAX_POSITION_DX_M = 0.5
+MAX_POSITION_DTHETA_RAD = 1.571
 
 
 @dataclass(frozen=True)
@@ -47,6 +53,19 @@ class Telemetry:
     rpm_right: int
     ticks_left: int
     ticks_right: int
+
+
+@dataclass(frozen=True)
+class DriveTelemetry:
+    """One ``DRV`` frame from a host CURRENT/POSITION session."""
+
+    mode: str
+    command_left_current_ma: int
+    command_right_current_ma: int
+    target_left_ticks: int
+    target_right_ticks: int
+    error_left_ticks: int
+    error_right_ticks: int
 
 
 @dataclass(frozen=True)
@@ -66,6 +85,26 @@ def format_velocity(left_rpm: float, right_rpm: float, max_rpm: float = MAX_WHEE
     left = int(round(clamp_rpm(left_rpm, max_rpm)))
     right = int(round(clamp_rpm(right_rpm, max_rpm)))
     return f"VEL,{left},{right}"
+
+
+def clamp_current(value: float, max_current_a: float = MAX_CURRENT_A) -> float:
+    limit = abs(float(max_current_a))
+    return max(-limit, min(limit, float(value)))
+
+
+def format_current(left_a: float, right_a: float, max_current_a: float = MAX_CURRENT_A) -> str:
+    limit_ma = int(round(abs(float(max_current_a)) * 1000.0))
+    left = int(round(clamp_current(left_a, max_current_a) * 1000.0))
+    right = int(round(clamp_current(right_a, max_current_a) * 1000.0))
+    left = max(-limit_ma, min(limit_ma, left))
+    right = max(-limit_ma, min(limit_ma, right))
+    return f"CUR,{left},{right}"
+
+
+def format_position(dx_m: float, dtheta_rad: float) -> str:
+    dx = max(-MAX_POSITION_DX_M, min(MAX_POSITION_DX_M, float(dx_m)))
+    dtheta = max(-MAX_POSITION_DTHETA_RAD, min(MAX_POSITION_DTHETA_RAD, float(dtheta_rad)))
+    return f"POS,{int(round(dx * 1000.0))},{int(round(dtheta * 1000.0))}"
 
 
 def format_stop() -> str:
@@ -111,13 +150,35 @@ def next_drive_command(
     return None, False
 
 
-def parse_line(line: str) -> Telemetry | Ack | None:
+def next_current_command(
+    *,
+    estop_latched: bool,
+    link_healthy: bool,
+    command_age_s: float,
+    command_hold_s: float,
+    left_a: float,
+    right_a: float,
+    max_current_a: float = MAX_CURRENT_A,
+    streaming: bool,
+) -> tuple[str | None, bool]:
+    """Return ``(serial_line, streaming)`` for one torque command tick."""
+    active = link_healthy and not estop_latched and command_age_s <= command_hold_s
+    if active:
+        return format_current(left_a, right_a, max_current_a), True
+    if streaming:
+        return format_stop(), False
+    return None, False
+
+
+def parse_line(line: str) -> Telemetry | DriveTelemetry | Ack | None:
     """Parse one serial line. Returns ``None`` for logs, blank lines, or garbage."""
     text = line.strip()
     if not text:
         return None
     if text.startswith("TEL,"):
         return _parse_telemetry(text)
+    if text.startswith("DRV,"):
+        return _parse_drive_telemetry(text)
     if text.startswith("OK,"):
         return Ack(True, text[3:].strip())
     if text.startswith("ERR,"):
@@ -149,6 +210,33 @@ def _parse_telemetry(text: str) -> Telemetry | None:
         rpm_right=rpm_right,
         ticks_left=ticks_left,
         ticks_right=ticks_right,
+    )
+
+
+def _parse_drive_telemetry(text: str) -> DriveTelemetry | None:
+    fields = text.split(",")
+    if len(fields) != 8:
+        return None
+    mode = {"T": "torque", "P": "position"}.get(fields[1])
+    if mode is None:
+        return None
+    try:
+        command_left_current_ma = int(fields[2])
+        command_right_current_ma = int(fields[3])
+        target_left_ticks = int(fields[4])
+        target_right_ticks = int(fields[5])
+        error_left_ticks = int(fields[6])
+        error_right_ticks = int(fields[7])
+    except (TypeError, ValueError):
+        return None
+    return DriveTelemetry(
+        mode=mode,
+        command_left_current_ma=command_left_current_ma,
+        command_right_current_ma=command_right_current_ma,
+        target_left_ticks=target_left_ticks,
+        target_right_ticks=target_right_ticks,
+        error_left_ticks=error_left_ticks,
+        error_right_ticks=error_right_ticks,
     )
 
 

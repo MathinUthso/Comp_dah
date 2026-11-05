@@ -4,12 +4,17 @@ import math
 
 import pytest
 from aegis_robot_bridge.protocol import (
+    MAX_CURRENT_A,
     Ack,
+    DriveTelemetry,
     Telemetry,
     WheelOdometry,
+    format_current,
     format_estop,
+    format_position,
     format_reset,
     format_velocity,
+    next_current_command,
     next_drive_command,
     parse_line,
     rpm_to_mps,
@@ -27,6 +32,19 @@ def test_format_velocity_rounds_and_clamps() -> None:
     assert format_velocity(120.4, -33.6) == "VEL,120,-34"
     assert format_velocity(99999.0, -99999.0) == "VEL,1500,-1500"
     assert format_velocity(10.0, 10.0, max_rpm=5.0) == "VEL,5,5"
+
+
+def test_format_current_rounds_and_clamps() -> None:
+    assert format_current(1.234, -0.5) == "CUR,1234,-500"
+    assert format_current(99.0, -99.0) == "CUR,10000,-10000"
+    assert format_current(2.0, -2.0, max_current_a=1.5) == "CUR,1500,-1500"
+    assert MAX_CURRENT_A == 10.0
+
+
+def test_format_position_rounds_and_clamps() -> None:
+    assert format_position(0.05, -0.2) == "POS,50,-200"
+    assert format_position(10.0, 10.0) == "POS,500,1571"
+    assert format_position(-10.0, -10.0) == "POS,-500,-1571"
 
 
 def test_command_lines_are_stable() -> None:
@@ -75,6 +93,52 @@ def test_drive_command_stops_for_estop_or_unhealthy_link() -> None:
         line, streaming = _drive(streaming=False, **overrides)
         assert line is None
         assert streaming is False
+
+
+def _torque(**overrides):
+    values = {
+        "estop_latched": False,
+        "link_healthy": True,
+        "command_age_s": 0.1,
+        "command_hold_s": 0.35,
+        "left_a": 1.5,
+        "right_a": -2.0,
+        "streaming": False,
+    }
+    values.update(overrides)
+    return next_current_command(**values)
+
+
+def test_torque_command_streams_only_while_cmd_current_is_fresh() -> None:
+    line, streaming = _torque()
+    assert line == "CUR,1500,-2000"
+    assert streaming is True
+
+
+def test_torque_command_sends_one_stop_when_stream_ends() -> None:
+    line, streaming = _torque(command_age_s=0.5, streaming=True)
+    assert line == "STOP"
+    assert streaming is False
+
+    line, streaming = _torque(command_age_s=0.5, streaming=False)
+    assert line is None
+    assert streaming is False
+
+
+def test_parse_drive_telemetry() -> None:
+    frame = parse_line("DRV,P,0,0,1200,-800,100,-60\n")
+    assert frame == DriveTelemetry(
+        mode="position",
+        command_left_current_ma=0,
+        command_right_current_ma=0,
+        target_left_ticks=1200,
+        target_right_ticks=-800,
+        error_left_ticks=100,
+        error_right_ticks=-60,
+    )
+    assert parse_line("DRV,T,1500,-2000,0,0,0,0\n").mode == "torque"
+    assert parse_line("DRV,X,1,2,3,4,5,6\n") is None
+    assert parse_line("DRV,T,1,2,3,4,5\n") is None
 
 
 def test_parse_telemetry() -> None:
