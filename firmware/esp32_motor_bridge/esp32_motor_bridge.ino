@@ -76,10 +76,11 @@ const float TICKS_PER_WHEEL_REV = TICKS_PER_MOTOR_REV * GEAR_RATIO;
 // targets must use per-side tick counts or moves arc.
 const float TICKS_PER_WHEEL_REV_LEFT = 36902.0f;
 const float TICKS_PER_WHEEL_REV_RIGHT = 41564.0f;
-// Per-motor minimum start RPM (LF, LB, RF, RB): motors are not identical, so
-// a shared floor drops out the weakest ones first. Raise an entry if its
-// motor still stalls while the others turn. Zero disables flooring.
-const int16_t MOTOR_MIN_RPM[4] = {500, 500, 500, 500};
+// Per-motor minimum start RPM (LF, LB, RF, RB): measured by single-motor
+// sweep (MTR/STAT): LF 1000, LB 800, RF 500, RB 1000. Motors are not
+// identical, so a shared floor drops out the weakest ones first. Raise an
+// entry if its motor still stalls while the others turn. Zero disables.
+const int16_t MOTOR_MIN_RPM[4] = {1100, 900, 600, 1100};
 
 // ==========================
 // PID PARAMETERS
