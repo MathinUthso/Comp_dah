@@ -72,6 +72,14 @@ const float TRACK_WIDTH = 0.28f;         // meters (distance between left/right 
 const float GEAR_RATIO = 1.0f;           // Set to your actual gear ratio
 const int TICKS_PER_MOTOR_REV = 8192;    // C620 encoder resolution
 const float TICKS_PER_WHEEL_REV = TICKS_PER_MOTOR_REV * GEAR_RATIO;
+// Measured by hand (one wheel turn each): the sides differ, so position
+// targets must use per-side tick counts or moves arc.
+const float TICKS_PER_WHEEL_REV_LEFT = 36902.0f;
+const float TICKS_PER_WHEEL_REV_RIGHT = 41564.0f;
+// Per-motor minimum start RPM (LF, LB, RF, RB): motors are not identical, so
+// a shared floor drops out the weakest ones first. Raise an entry if its
+// motor still stalls while the others turn. Zero disables flooring.
+const int16_t MOTOR_MIN_RPM[4] = {500, 500, 500, 500};
 
 // ==========================
 // PID PARAMETERS
@@ -122,6 +130,12 @@ int16_t hostLeftRpm = 0;
 int16_t hostRightRpm = 0;
 int16_t hostLeftCurrentMa = 0;
 int16_t hostRightCurrentMa = 0;
+
+// Single-motor test mode (MTR command): drive one motor at a time to find
+// each motor's start threshold. Cleared by any other host command.
+bool singleMotorTest = false;
+int testMotorIdx = -1;
+int16_t testMotorRpm = 0;
 
 // ==========================
 // MOTOR STRUCTURE
@@ -185,6 +199,20 @@ inline float wheelCircumference() {
 inline float metersToTicks(float meters) {
   float revs = meters / wheelCircumference();
   return revs * TICKS_PER_WHEEL_REV;
+}
+
+inline float metersToTicksSide(float meters, bool leftSide) {
+  float revs = meters / wheelCircumference();
+  return revs * (leftSide ? TICKS_PER_WHEEL_REV_LEFT : TICKS_PER_WHEEL_REV_RIGHT);
+}
+
+// Floor one motor's RPM command to its start threshold (sign preserved, zero
+// stays zero) so all four motors break friction together.
+inline int16_t applyMotorMinRpm(int index, int16_t rpm) {
+  int16_t floorRpm = MOTOR_MIN_RPM[index];
+  if (rpm == 0 || floorRpm <= 0) return rpm;
+  if (rpm > 0) return rpm >= floorRpm ? rpm : floorRpm;
+  return rpm <= -floorRpm ? rpm : (int16_t)-floorRpm;
 }
 
 inline float ticksToMeters(int64_t ticks) {
@@ -274,8 +302,8 @@ void moveByBodyDelta(float dx_meters, float dtheta_radians) {
   float s_left = dx_meters - dtheta_radians * (TRACK_WIDTH / 2.0f);
   float s_right = dx_meters + dtheta_radians * (TRACK_WIDTH / 2.0f);
 
-  int32_t ticks_left = (int32_t)round(metersToTicks(s_left));
-  int32_t ticks_right = (int32_t)round(metersToTicks(s_right));
+  int32_t ticks_left = (int32_t)round(metersToTicksSide(s_left, true));
+  int32_t ticks_right = (int32_t)round(metersToTicksSide(s_right, false));
 
   // Left side positive = forward, right side negative = forward
   motors[0].target_ticks += ticks_left;    // LF
@@ -455,6 +483,13 @@ void handleHostCommand(char *line) {
     return;
   }
 
+  // Any non-test command exits single-motor test mode.
+  if (strncmp(line, "MTR,", 4) != 0 && strcmp(line, "STAT") != 0) {
+    singleMotorTest = false;
+    testMotorIdx = -1;
+    testMotorRpm = 0;
+  }
+
   if (strcmp(line, "PING") == 0) {
     markHostCommand();
     Serial.println("OK,pong");
@@ -490,6 +525,42 @@ void handleHostCommand(char *line) {
     stopAllPosition();
     hostDriveMode = HOST_VELOCITY;
     Serial.println("OK,reset");
+    return;
+  }
+
+  if (strncmp(line, "MTR,", 4) == 0) {
+    char *idxText = line + 4;
+    char *comma = strchr(idxText, ',');
+    if (comma == NULL) {
+      Serial.println("ERR,mtr-format");
+      return;
+    }
+    *comma = '\0';
+    long idx = strtol(idxText, NULL, 10);
+    long rpm = strtol(comma + 1, NULL, 10);
+    if (idx < 0 || idx > 3) {
+      Serial.println("ERR,mtr-idx");
+      return;
+    }
+    singleMotorTest = (rpm != 0);
+    testMotorIdx = (int)idx;
+    testMotorRpm = (int16_t)constrain(rpm, (long)-HOST_MAX_RPM, (long)HOST_MAX_RPM);
+    hostDriveMode = HOST_VELOCITY;
+    markHostCommand();
+    Serial.println("OK,mtr");
+    return;
+  }
+
+  if (strcmp(line, "STAT") == 0) {
+    markHostCommand();
+    const char* names[] = {"LF", "LB", "RF", "RB"};
+    for (int i = 0; i < 4; i++) {
+      Serial.printf("# MTR %s pos=%lld rpm=%d\n",
+                    names[i],
+                    motors[i].total_ticks,
+                    motors[i].latest_rpm_feedback);
+    }
+    Serial.println("OK,stat");
     return;
   }
 
@@ -819,6 +890,11 @@ void loop() {
         // otherwise keep driving toward the last target.
         rpm_cmds[0] = rpm_cmds[1] = rpm_cmds[2] = rpm_cmds[3] = 0;
 
+      } else if (singleMotorTest && testMotorIdx >= 0) {
+        // Single-motor test: only the selected motor gets its setpoint.
+        for (int i = 0; i < 4; i++) rpm_cmds[i] = 0;
+        rpm_cmds[testMotorIdx] = testMotorRpm;
+
       } else if (hostDriveMode == HOST_CURRENT) {
         // Dashboard torque drive: side current straight from the Pi bridge.
         applySideCurrent(hostLeftCurrentMa, hostRightCurrentMa);
@@ -830,16 +906,17 @@ void loop() {
       } else if (hostDriveMode == HOST_POSITION) {
         // Host position hold/move, RPM capped so moves stay controlled.
         for (int i = 0; i < 4; i++) {
-          rpm_cmds[i] = computePIDandGetRPM(motors[i], HOST_MAX_POS_RPM);
+          rpm_cmds[i] = applyMotorMinRpm(i, computePIDandGetRPM(motors[i], HOST_MAX_POS_RPM));
         }
 
       } else {
-        // Dashboard velocity drive: side RPM straight from the Pi bridge.
+        // Dashboard velocity drive: side RPM straight from the Pi bridge,
+        // floored per motor so weak motors don't stall out.
         applySideVelocity(hostLeftRpm, hostRightRpm);
-        rpm_cmds[0] = LF_vel;
-        rpm_cmds[1] = LB_vel;
-        rpm_cmds[2] = RF_vel;
-        rpm_cmds[3] = RB_vel;
+        rpm_cmds[0] = applyMotorMinRpm(0, LF_vel);
+        rpm_cmds[1] = applyMotorMinRpm(1, LB_vel);
+        rpm_cmds[2] = applyMotorMinRpm(2, RF_vel);
+        rpm_cmds[3] = applyMotorMinRpm(3, RB_vel);
       }
 
     } else if (controlMode == MODE_VELOCITY) {
