@@ -105,6 +105,11 @@ const float C620_MAX_AMPS = 20.0f;
 const int16_t C620_MAX_RAW = 16384;
 const int16_t HOST_MAX_CURRENT_MA = 10000;
 const int16_t HOST_MAX_CURRENT_RAW = 8192;
+// Position-mode PID output cap in RPM: without this the PID converts the full
+// tick error directly (Kp 0.4 x 7823 ticks = ~3100 RPM) and slams the motors
+// into the target, overshooting and stressing the mounts. 350 RPM keeps
+// position/coordinate moves firm but controlled.
+const int16_t HOST_MAX_POS_RPM = 350;
 const float CURRENT_MA_TO_RAW = (float)C620_MAX_RAW / (C620_MAX_AMPS * 1000.0f);
 const long HOST_MAX_POS_DX_MM = 500;          // max 0.5 m per POS line
 const long HOST_MAX_POS_DTHETA_MRAD = 1571;   // max ~0.5 turn per POS line
@@ -823,9 +828,9 @@ void loop() {
         rpm_cmds[3] = RB_vel;
 
       } else if (hostDriveMode == HOST_POSITION) {
-        // Host position hold/move, with the PID output capped at 10 A.
+        // Host position hold/move, RPM capped so moves stay controlled.
         for (int i = 0; i < 4; i++) {
-          rpm_cmds[i] = computePIDandGetRPM(motors[i], HOST_MAX_CURRENT_RAW);
+          rpm_cmds[i] = computePIDandGetRPM(motors[i], HOST_MAX_POS_RPM);
         }
 
       } else {
